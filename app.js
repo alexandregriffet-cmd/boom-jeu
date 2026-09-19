@@ -68,6 +68,25 @@
     ecouteursActifs = [];
   }
 
+  // Realtime Database ne sait pas stocker un tableau ou un objet vide : la
+  // clé disparaît purement et simplement (elle revient "undefined" à la
+  // lecture, même si côté hôte c'était bien "[]" ou "{}"). Sans ce
+  // correctif, un joueur invité qui reçoit un état de partie tout frais
+  // (aucun défi en attente, aucun pari déposé…) plante au premier accès à
+  // l'une de ces collections. On restaure les valeurs par défaut ici,
+  // juste après réception, avant tout rendu.
+  function normaliserEtat(etat) {
+    if (!etat) return etat;
+    if (!etat.defisEnAttente) etat.defisEnAttente = [];
+    if (!etat.cartesUtilisees) etat.cartesUtilisees = [];
+    if (!etat.historique) etat.historique = [];
+    if (etat.manche) {
+      if (!etat.manche.paris) etat.manche.paris = {};
+      if (etat.manche.joker && !etat.manche.joker.votes) etat.manche.joker.votes = {};
+    }
+    return etat;
+  }
+
   // ------------------------------------------------------------
   // Utilitaires DOM
   // ------------------------------------------------------------
@@ -449,7 +468,7 @@
     ecouter(refSalon.child("etat"), "value", (snap) => {
       const val = snap.val();
       if (!val) return;
-      gameState = val;
+      gameState = normaliserEtat(val);
       if (gameState.terminee) {
         const ecranActif = document.querySelector(".ecran.actif");
         if (ecranActif && ecranActif.id === "ecran-fin") {
@@ -485,7 +504,7 @@
       .then((snap) => {
         const val = snap.val();
         if (val) {
-          gameState = val;
+          gameState = normaliserEtat(val);
           if (gameState.terminee) afficherFin();
           else { afficherEcran("ecran-jeu"); actualiserEcranJeu(); }
         } else {
