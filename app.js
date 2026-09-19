@@ -138,6 +138,7 @@
     codeSalon = null;
     codeSalonRejoint = null;
     nomInvite = null;
+    monJoueurId = null;
     arreterBattementCoeur();
     arreterVeilleInvite();
   }
@@ -326,7 +327,10 @@
       conn.on("open", () => {
         conn.on("data", (msg) => receptionHote(conn, msg));
         conn.on("close", () => {
-          delete hostConns[conn.peer];
+          const cle = conn.joueurId || conn.peer;
+          // Une connexion remplacée (reconnexion réussie) ne doit pas
+          // effacer la nouvelle connexion active du même joueur.
+          if (hostConns[cle] === conn) delete hostConns[cle];
         });
       });
     });
@@ -339,16 +343,21 @@
   function receptionHote(conn, msg) {
     if (!msg || !msg.t) return;
 
+    // Identité persistante du joueur, indépendante de l'id réseau PeerJS
+    // (qui change à chaque reconnexion si le téléphone doit tout
+    // reconstruire) : le client l'envoie lui-même et la réutilise.
     if (msg.t === "inscription") {
       const nom = String(msg.nom || "Invité").slice(0, 20);
       const pack = msg.pack === "M" || msg.pack === "B" ? msg.pack : "M";
-      hostConns[conn.peer] = conn;
+      const joueurId = (msg.joueurId && String(msg.joueurId).slice(0, 40)) || conn.peer;
+      conn.joueurId = joueurId;
+      hostConns[joueurId] = conn;
 
       if (!gameState) {
         // Partie pas encore démarrée : on ajoute au lobby
-        contexte.joueursLocaux.push({ id: conn.peer, nom, pack, distant: true });
+        contexte.joueursLocaux.push({ id: joueurId, nom, pack, distant: true });
         redessinerListeJoueurs();
-        conn.send({ t: "bienvenue", joueurId: conn.peer });
+        conn.send({ t: "bienvenue", joueurId });
         diffuserLobby();
       } else {
         conn.send({ t: "erreur", message: "La partie a déjà commencé." });
@@ -357,12 +366,16 @@
     }
 
     if (msg.t === "resync") {
-      // Un client redemande l'état courant (message précédent perdu en route)
-      hostConns[conn.peer] = conn;
+      // Un client redemande l'état courant (message précédent perdu, ou
+      // reconnexion complète après une connexion morte) — on le
+      // rattache à son identité de joueur d'origine.
+      const joueurId = (msg.joueurId && String(msg.joueurId).slice(0, 40)) || conn.peer;
+      conn.joueurId = joueurId;
+      hostConns[joueurId] = conn;
       if (gameState) {
         conn.send({ t: "etat", state: gameState });
       } else {
-        conn.send({ t: "bienvenue", joueurId: conn.peer });
+        conn.send({ t: "bienvenue", joueurId });
         diffuserLobby();
       }
       return;
@@ -370,7 +383,7 @@
 
     if (msg.t === "action" && gameState) {
       try {
-        appliquerAction(msg.type, msg.payload || {}, conn.peer);
+        appliquerAction(msg.type, msg.payload || {}, conn.joueurId || conn.peer);
         diffuser({ t: "etat", state: gameState });
         apresMiseAJourEtat();
       } catch (e) {
@@ -403,6 +416,7 @@
     contexte.role = "invite";
     codeSalonRejoint = code;
     nomInvite = nom;
+    if (!monJoueurId) monJoueurId = genererIdJoueur();
     $("#erreur-rejoindre").textContent = "Connexion au salon…";
     try {
       peer = new Peer(undefined, { config: CONFIG_ICE });
@@ -437,18 +451,26 @@
     });
   }
 
-  // Ouvre (ou rouvre) le canal de données vers l'hôte, en réutilisant le
-  // même peer.id à chaque fois : côté hôte, cet id EST l'identifiant du
-  // joueur, donc une reconnexion garde le même joueur et son score.
+  // Identifiant de joueur permanent côté invité : généré une seule fois et
+  // réutilisé à chaque reconnexion, même si le canal réseau PeerJS doit
+  // être entièrement reconstruit (id réseau différent à chaque fois).
+  // C'est ce qui permet à l'hôte de reconnaître le même joueur (score,
+  // rôle de Cible…) après une coupure complète.
+  let monJoueurId = null;
+  function genererIdJoueur() {
+    return "j" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+  }
+
+  // Ouvre (ou rouvre) le canal de données vers l'hôte sur le peer courant.
   function ouvrirConnexionInvite(code, surOuverture, surErreur) {
     clientConn = peer.connect(`boom-${code}`, { reliable: true });
     clientConn.on("open", () => {
       dernierMessageRecu = Date.now();
       if (contexte.moiId) {
         // Reconnexion : l'hôte connaît déjà ce joueur, on redemande l'état.
-        clientConn.send({ t: "resync" });
+        clientConn.send({ t: "resync", joueurId: monJoueurId });
       } else {
-        clientConn.send({ t: "inscription", nom: nomInvite, pack: "M" });
+        clientConn.send({ t: "inscription", nom: nomInvite, pack: "M", joueurId: monJoueurId });
       }
       demarrerVeilleInvite();
       if (surOuverture) surOuverture();
@@ -517,12 +539,15 @@
     if (veilleInviteId) { clearInterval(veilleInviteId); veilleInviteId = null; }
   }
 
-  // Demande de resynchronisation manuelle ("Réessayer"). On tente d'abord
-  // un simple message sur la connexion actuelle (cas d'un message isolé
-  // perdu) ; si rien ne revient en quelques secondes, la connexion est
-  // probablement vraiment morte (téléphone mis en veille, changement de
-  // réseau…) donc on la reconstruit entièrement, en gardant le même
-  // peer.id pour rester reconnu comme le même joueur côté hôte.
+  // Demande de resynchronisation manuelle ("Réessayer") ou automatique
+  // (veille). On tente d'abord un simple message sur la connexion
+  // actuelle (cas d'un message isolé perdu) ; si rien ne revient en
+  // quelques secondes, on considère que le canal réseau est mort pour de
+  // bon (téléphone mis en veille, changement de réseau…) et on repart
+  // d'un tout nouveau peer PeerJS, exactement comme au premier
+  // branchement — plus fiable que de tenter de ressusciter l'ancien.
+  // L'identifiant persistant monJoueurId permet à l'hôte de reconnaître
+  // le même joueur malgré ce nouvel id réseau.
   let resyncEnCours = false;
   function demanderResync() {
     if (resyncEnCours) return;
@@ -531,7 +556,7 @@
     const avant = dernierMessageRecu;
 
     if (clientConn && clientConn.open) {
-      try { clientConn.send({ t: "resync" }); } catch (e) {}
+      try { clientConn.send({ t: "resync", joueurId: monJoueurId }); } catch (e) {}
     }
 
     setTimeout(() => {
@@ -540,26 +565,49 @@
         resyncEnCours = false;
         return;
       }
-      // Toujours rien : on reconstruit la connexion depuis zéro.
+      // Toujours rien : reconnexion complète avec un peer flambant neuf.
       $("#statut-connexion").textContent = "Reconnexion en cours…";
       try { if (clientConn) clientConn.close(); } catch (e) {}
-      const relancer = () => {
+      try { if (peer) peer.destroy(); } catch (e) {}
+      peer = null;
+      clientConn = null;
+
+      let ouvert = false;
+      const echecTimeout = setTimeout(() => {
+        if (!ouvert) {
+          resyncEnCours = false;
+          $("#statut-connexion").textContent = "Toujours pas de réseau. Réessaie dans quelques secondes.";
+        }
+      }, 10000);
+
+      let nouveauPeer;
+      try {
+        nouveauPeer = new Peer(undefined, { config: CONFIG_ICE });
+      } catch (e) {
+        clearTimeout(echecTimeout);
+        resyncEnCours = false;
+        $("#statut-connexion").textContent = "Connexion en ligne indisponible.";
+        return;
+      }
+      peer = nouveauPeer;
+      peer.on("open", () => {
         ouvrirConnexionInvite(codeSalonRejoint, () => {
-          $("#statut-connexion").textContent = "Reconnecté, resynchronisation…";
+          ouvert = true;
+          clearTimeout(echecTimeout);
+          resyncEnCours = false;
+          $("#statut-connexion").textContent = "Reconnecté !";
         }, () => {
+          resyncEnCours = false;
+          clearTimeout(echecTimeout);
           $("#statut-connexion").textContent = "Toujours pas de connexion. Réessaie dans un instant.";
         });
+      });
+      peer.on("error", (err) => {
+        console.error("Erreur PeerJS (reconnexion)", err);
         resyncEnCours = false;
-      };
-      if (peer && !peer.destroyed && !peer.disconnected) {
-        relancer();
-      } else if (peer && !peer.destroyed) {
-        peer.once("open", relancer);
-        try { peer.reconnect(); } catch (e) { resyncEnCours = false; $("#statut-connexion").textContent = "Reviens à l'accueil et rejoins à nouveau le salon."; }
-      } else {
-        resyncEnCours = false;
-        $("#statut-connexion").textContent = "Connexion perdue. Reviens à l'accueil et rejoins à nouveau le salon.";
-      }
+        clearTimeout(echecTimeout);
+        $("#statut-connexion").textContent = "Toujours pas de connexion. Réessaie dans un instant.";
+      });
     }, 3500);
   }
 
