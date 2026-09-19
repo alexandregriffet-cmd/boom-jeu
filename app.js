@@ -15,6 +15,38 @@
 (function () {
   "use strict";
 
+  // Numéro de build affiché en bas de l'écran d'accueil — sert à vérifier
+  // qu'un téléphone a bien reçu la dernière version déployée (et pas une
+  // copie mise en cache par le navigateur).
+  const VERSION_APP = "2026-09-19-2";
+
+  // Un joueur sur téléphone n'a pas accès à la console développeur : sans
+  // ça, une erreur JavaScript est invisible et donne l'impression que "rien
+  // ne se passe" quand on appuie sur un bouton. On affiche donc toute
+  // erreur non interceptée directement à l'écran, en rouge, en haut.
+  function afficherBanniereErreur(message) {
+    try {
+      let b = document.getElementById("banniere-erreur-js");
+      if (!b) {
+        b = document.createElement("div");
+        b.id = "banniere-erreur-js";
+        b.style.cssText =
+          "position:fixed;top:0;left:0;right:0;z-index:999;background:#c81e4a;color:#fff;" +
+          "padding:10px 14px;font-size:13px;font-family:sans-serif;white-space:pre-wrap;" +
+          "box-shadow:0 2px 8px rgba(0,0,0,.4);";
+        document.body.appendChild(b);
+      }
+      b.textContent = "⚠️ Erreur JS : " + message;
+    } catch (e) {}
+  }
+  window.addEventListener("error", (ev) => {
+    afficherBanniereErreur((ev && ev.message) || "erreur inconnue");
+  });
+  window.addEventListener("unhandledrejection", (ev) => {
+    const raison = ev && ev.reason;
+    afficherBanniereErreur((raison && (raison.message || String(raison))) || "promesse rejetée");
+  });
+
   const { NIVEAUX, NIVEAUX_GAGES } = window.BoomCartes || require("./cartes.js");
   const Engine = window.BoomEngine;
 
@@ -98,6 +130,9 @@
     const cible = document.getElementById(id);
     if (cible) cible.classList.add("actif");
   }
+
+  const elVersion = document.getElementById("version-app");
+  if (elVersion) elVersion.textContent = "v" + VERSION_APP;
 
   function couleurNiveau(id) {
     return getComputedStyle(document.documentElement).getPropertyValue(`--niveau-${id}`).trim();
@@ -482,6 +517,7 @@
     });
 
     ecouter(refSalon.child("etat"), "value", (snap) => {
+      try {
       const val = snap.val();
       if (!val) return;
       gameState = normaliserEtat(val);
@@ -495,6 +531,10 @@
       } else {
         afficherEcran("ecran-jeu");
         actualiserEcranJeu();
+      }
+      } catch (e) {
+        console.error("Erreur au rendu de l'état reçu", e);
+        afficherBanniereErreur(e.message || String(e));
       }
     });
 
