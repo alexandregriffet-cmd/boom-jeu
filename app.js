@@ -30,6 +30,9 @@
   let hostConns = {};      // hôte : joueurId -> DataConnection
   let clientConn = null;   // invité : DataConnection vers l'hôte
   let codeSalon = null;
+  let codeSalonRejoint = null; // invité : code du salon, gardé pour une reconnexion
+  let nomInvite = null;        // invité : prénom saisi, gardé pour une reconnexion
+  let dernierMessageRecu = 0;  // invité : horodatage du dernier message reçu de l'hôte
 
   let apresTransfert = null; // callback en attente sur l'écran de transfert
 
@@ -133,7 +136,10 @@
     hostConns = {};
     clientConn = null;
     codeSalon = null;
+    codeSalonRejoint = null;
+    nomInvite = null;
     arreterBattementCoeur();
+    arreterVeilleInvite();
   }
 
   // ------------------------------------------------------------
@@ -379,7 +385,9 @@
   }
 
   function diffuser(msg) {
-    Object.values(hostConns).forEach((c) => { try { c.send(msg); } catch (e) {} });
+    Object.values(hostConns).forEach((c) => {
+      try { c.send(msg); } catch (e) { console.error("Échec d'envoi à", c.peer, e); }
+    });
   }
 
   // ------------------------------------------------------------
@@ -393,6 +401,8 @@
     if (!nom) { $("#erreur-rejoindre").textContent = "Donne ton prénom."; return; }
 
     contexte.role = "invite";
+    codeSalonRejoint = code;
+    nomInvite = nom;
     $("#erreur-rejoindre").textContent = "Connexion au salon…";
     try {
       peer = new Peer(undefined, { config: CONFIG_ICE });
@@ -410,14 +420,10 @@
     }, 12000);
 
     peer.on("open", () => {
-      clientConn = peer.connect(`boom-${code}`, { reliable: true });
-      clientConn.on("open", () => {
+      ouvrirConnexionInvite(code, () => {
         rejoint = true;
         clearTimeout(delaiEchec);
-        clientConn.send({ t: "inscription", nom, pack: "M" });
-      });
-      clientConn.on("data", (msg) => receptionInvite(msg));
-      clientConn.on("error", (err) => {
+      }, (err) => {
         console.error("Erreur de connexion PeerJS", err);
         $("#erreur-rejoindre").textContent = "Salon introuvable. Vérifie le code.";
       });
@@ -428,6 +434,31 @@
     peer.on("error", (err) => {
       console.error("Erreur PeerJS", err);
       $("#erreur-rejoindre").textContent = "Salon introuvable. Vérifie le code.";
+    });
+  }
+
+  // Ouvre (ou rouvre) le canal de données vers l'hôte, en réutilisant le
+  // même peer.id à chaque fois : côté hôte, cet id EST l'identifiant du
+  // joueur, donc une reconnexion garde le même joueur et son score.
+  function ouvrirConnexionInvite(code, surOuverture, surErreur) {
+    clientConn = peer.connect(`boom-${code}`, { reliable: true });
+    clientConn.on("open", () => {
+      dernierMessageRecu = Date.now();
+      if (contexte.moiId) {
+        // Reconnexion : l'hôte connaît déjà ce joueur, on redemande l'état.
+        clientConn.send({ t: "resync" });
+      } else {
+        clientConn.send({ t: "inscription", nom: nomInvite, pack: "M" });
+      }
+      demarrerVeilleInvite();
+      if (surOuverture) surOuverture();
+    });
+    clientConn.on("data", (msg) => { dernierMessageRecu = Date.now(); receptionInvite(msg); });
+    clientConn.on("error", (err) => { if (surErreur) surErreur(err); });
+    clientConn.on("close", () => {
+      if (contexte.moiId && gameState && !gameState.terminee) {
+        $("#statut-connexion").textContent = "Connexion coupée. Appuie sur « Réessayer ».";
+      }
     });
   }
 
@@ -468,13 +499,68 @@
     if (clientConn) clientConn.send({ t: "action", type, payload });
   }
 
+  // Veille invité : si plus aucun message n'arrive de l'hôte pendant un
+  // moment (téléphone mis en veille, coupure réseau discrète…), on tente
+  // une resynchronisation automatique, sans attendre que le joueur
+  // s'aperçoive qu'il est bloqué et appuie lui-même sur « Réessayer ».
+  let veilleInviteId = null;
+  function demarrerVeilleInvite() {
+    if (veilleInviteId) return;
+    veilleInviteId = setInterval(() => {
+      if (contexte.role !== "invite") { arreterVeilleInvite(); return; }
+      if (Date.now() - dernierMessageRecu > 9000) {
+        demanderResync();
+      }
+    }, 5000);
+  }
+  function arreterVeilleInvite() {
+    if (veilleInviteId) { clearInterval(veilleInviteId); veilleInviteId = null; }
+  }
+
+  // Demande de resynchronisation manuelle ("Réessayer"). On tente d'abord
+  // un simple message sur la connexion actuelle (cas d'un message isolé
+  // perdu) ; si rien ne revient en quelques secondes, la connexion est
+  // probablement vraiment morte (téléphone mis en veille, changement de
+  // réseau…) donc on la reconstruit entièrement, en gardant le même
+  // peer.id pour rester reconnu comme le même joueur côté hôte.
+  let resyncEnCours = false;
   function demanderResync() {
+    if (resyncEnCours) return;
+    resyncEnCours = true;
+    $("#statut-connexion").textContent = "Resynchronisation…";
+    const avant = dernierMessageRecu;
+
     if (clientConn && clientConn.open) {
-      $("#statut-connexion").textContent = "Resynchronisation…";
       try { clientConn.send({ t: "resync" }); } catch (e) {}
-    } else {
-      $("#statut-connexion").textContent = "Connexion coupée. Reviens à l'accueil et rejoins à nouveau le salon.";
     }
+
+    setTimeout(() => {
+      if (dernierMessageRecu !== avant) {
+        // Une réponse est arrivée entre-temps, tout est rentré dans l'ordre.
+        resyncEnCours = false;
+        return;
+      }
+      // Toujours rien : on reconstruit la connexion depuis zéro.
+      $("#statut-connexion").textContent = "Reconnexion en cours…";
+      try { if (clientConn) clientConn.close(); } catch (e) {}
+      const relancer = () => {
+        ouvrirConnexionInvite(codeSalonRejoint, () => {
+          $("#statut-connexion").textContent = "Reconnecté, resynchronisation…";
+        }, () => {
+          $("#statut-connexion").textContent = "Toujours pas de connexion. Réessaie dans un instant.";
+        });
+        resyncEnCours = false;
+      };
+      if (peer && !peer.destroyed && !peer.disconnected) {
+        relancer();
+      } else if (peer && !peer.destroyed) {
+        peer.once("open", relancer);
+        try { peer.reconnect(); } catch (e) { resyncEnCours = false; $("#statut-connexion").textContent = "Reviens à l'accueil et rejoins à nouveau le salon."; }
+      } else {
+        resyncEnCours = false;
+        $("#statut-connexion").textContent = "Connexion perdue. Reviens à l'accueil et rejoins à nouveau le salon.";
+      }
+    }, 3500);
   }
 
   // ------------------------------------------------------------
