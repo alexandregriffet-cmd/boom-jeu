@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover" />
+<title>BooM 💥</title>
+<meta name="description" content="BooM — le jeu de soirée à deux ou plus. Situations, paris, véto, joker et gages." />
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>💥</text></svg>" />
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<div id="app" class="conteneur">
+
+  <!-- ============ ACCUEIL ============ -->
+  <section id="ecran-accueil" class="ecran actif">
+    <div class="logo-boom">
+      <span class="logo-texte">BooM</span><span class="logo-emoji">💥</span>
+    </div>
+    <p class="sous-titre">Le jeu de soirée à deux, ou plus.</p>
+
+    <div class="pile-boutons">
+      <button class="btn btn-principal" data-action="mode-local">
+        📱 Un seul téléphone<span class="btn-sous">Vous vous le passez à tour de rôle</span>
+      </button>
+      <button class="btn btn-principal" data-action="mode-hote">
+        🌐 Créer un salon en ligne<span class="btn-sous">Chacun sur son téléphone</span>
+      </button>
+      <button class="btn btn-principal" data-action="mode-invite">
+        🔑 Rejoindre un salon<span class="btn-sous">Avec un code reçu</span>
+      </button>
+    </div>
+
+    <button class="lien-discret" data-action="voir-regles">Règles du jeu</button>
+  </section>
+
+  <!-- ============ REJOINDRE (code) ============ -->
+  <section id="ecran-rejoindre" class="ecran">
+    <h2>Rejoindre un salon</h2>
+    <p class="texte-aide">Demande le code à 4 lettres affiché sur l'écran de l'hôte.</p>
+    <input id="champ-code-salon" class="champ champ-code" maxlength="4" placeholder="CODE" autocapitalize="characters" />
+    <input id="champ-prenom-invite" class="champ" placeholder="Ton prénom" maxlength="20" />
+    <button class="btn btn-principal" data-action="rejoindre-salon">Rejoindre</button>
+    <p id="erreur-rejoindre" class="texte-erreur"></p>
+    <button class="lien-discret" data-action="retour-accueil">← Retour</button>
+  </section>
+
+  <!-- ============ CONFIGURATION (local + hôte) ============ -->
+  <section id="ecran-config" class="ecran">
+    <h2>Réglages de la partie</h2>
+
+    <div class="bloc">
+      <h3>Niveaux de cartes</h3>
+      <div id="choix-niveaux" class="grille-niveaux"></div>
+    </div>
+
+    <div class="bloc">
+      <h3>Cartes Véto par joueur</h3>
+      <div class="selecteur-nombre" id="selecteur-vetos" data-valeur="2">
+        <button class="btn-rond" data-veto-delta="-1">−</button>
+        <span id="valeur-vetos">2</span>
+        <button class="btn-rond" data-veto-delta="1">+</button>
+      </div>
+      <p class="texte-aide">0 = mode sans pitié, 5 = maximum de confort.</p>
+    </div>
+
+    <div class="bloc">
+      <h3>Nombre de manches</h3>
+      <div class="selecteur-nombre" id="selecteur-manches" data-valeur="15">
+        <button class="btn-rond" data-manches-delta="-5">−</button>
+        <span id="valeur-manches">15</span>
+        <button class="btn-rond" data-manches-delta="5">+</button>
+      </div>
+      <p class="texte-aide">Environ 2 minutes par manche.</p>
+    </div>
+
+    <div class="bloc" id="bloc-joueurs">
+      <h3>Joueurs</h3>
+      <p class="texte-aide" id="aide-joueurs">Ajoute chaque joueur avec son prénom et son paquet de réactions.</p>
+      <div id="liste-joueurs" class="liste-joueurs"></div>
+      <div id="ajout-joueur-local" class="ajout-joueur">
+        <input id="champ-prenom-joueur" class="champ" placeholder="Prénom" maxlength="20" />
+        <div class="choix-pack">
+          <button class="btn-pack" data-pack="M" type="button">M · filles</button>
+          <button class="btn-pack" data-pack="B" type="button">B · garçons</button>
+        </div>
+        <button class="btn btn-secondaire" data-action="ajouter-joueur">+ Ajouter</button>
+      </div>
+    </div>
+
+    <div class="bloc" id="bloc-code-salon" style="display:none">
+      <h3>Code du salon</h3>
+      <div id="affichage-code" class="affichage-code">----</div>
+      <p class="texte-aide">Donne ce code aux autres joueurs pour qu'ils rejoignent.</p>
+    </div>
+
+    <button class="btn btn-principal btn-demarrer" data-action="demarrer-partie">🎮 Démarrer la partie</button>
+    <p id="erreur-config" class="texte-erreur"></p>
+    <button class="lien-discret" data-action="retour-accueil">← Retour</button>
+  </section>
+
+  <!-- ============ SALLE D'ATTENTE (invité en ligne) ============ -->
+  <section id="ecran-attente" class="ecran">
+    <h2>Salle d'attente</h2>
+    <p class="texte-aide">L'hôte configure la partie…</p>
+    <div id="liste-joueurs-attente" class="liste-joueurs"></div>
+    <p id="statut-connexion" class="texte-aide"></p>
+  </section>
+
+  <!-- ============ ÉCRAN DE TRANSFERT (mode local) ============ -->
+  <section id="ecran-transfert" class="ecran">
+    <div class="carte-transfert">
+      <p class="transfert-emoji">📱➡️</p>
+      <h2>Passe le téléphone à</h2>
+      <p id="transfert-nom" class="transfert-nom">—</p>
+      <p id="transfert-consigne" class="texte-aide">Les autres détournent le regard 👀</p>
+      <button class="btn btn-principal" data-action="transfert-pret">C'est fait, j'ai le téléphone</button>
+    </div>
+  </section>
+
+  <!-- ============ ÉCRAN DE JEU ============ -->
+  <section id="ecran-jeu" class="ecran">
+    <header class="entete-jeu">
+      <span id="compteur-manche" class="badge-manche">Manche 1</span>
+      <span id="badge-niveau" class="badge-niveau">Doux</span>
+    </header>
+
+    <div id="barre-defis" class="barre-defis" style="display:none">
+      <button class="lien-discret" data-action="ouvrir-defis">🎯 Défis en attente (<span id="nb-defis-attente">0</span>)</button>
+    </div>
+
+    <div id="tableau-scores" class="tableau-scores"></div>
+
+    <div id="zone-carte" class="zone-carte"></div>
+
+    <div id="zone-action" class="zone-action"></div>
+  </section>
+
+  <!-- ============ FIN DE PARTIE ============ -->
+  <section id="ecran-fin" class="ecran">
+    <h2>Fin de la partie 🏁</h2>
+    <div id="podium" class="podium"></div>
+    <div id="carte-consequence" class="carte-consequence"></div>
+    <div id="defis-attente-fin"></div>
+    <button class="btn btn-principal" data-action="retour-accueil">Nouvelle partie</button>
+  </section>
+
+  <!-- ============ DÉFIS EN ATTENTE (modale) ============ -->
+  <div id="modale-defis" class="modale">
+    <div class="modale-contenu">
+      <button class="modale-fermer" data-action="fermer-defis">✕</button>
+      <h2>Défis en attente 🎯</h2>
+      <p class="texte-aide">À valider dès que c'est fait — ou plus tard dans la soirée.</p>
+      <div id="liste-defis-attente"></div>
+    </div>
+  </div>
+
+  <!-- ============ RÈGLES (modale) ============ -->
+  <div id="modale-regles" class="modale">
+    <div class="modale-contenu">
+      <button class="modale-fermer" data-action="fermer-regles">✕</button>
+      <h2>Règles de BooM 💥</h2>
+      <ol class="liste-regles">
+        <li>Une situation est tirée et une <strong>Cible</strong> est désignée.</li>
+        <li>La Cible choisit en secret l'une de ses 5 réactions (M pour les filles, B pour les garçons — chacun choisit son paquet librement).</li>
+        <li>Les autres joueurs parient sur la réaction choisie.</li>
+        <li>Au révèle : chaque bon pari rapporte <strong>+1 point</strong>. Si personne n'a trouvé, c'est <strong>BOOM 💥</strong> : la Cible marque <strong>+2</strong> et justifie sa réponse (et nomme la personne concernée si la carte le demande).</li>
+        <li><strong>Carte Véto</strong> : la Cible peut passer une situation qui la gêne. Nombre limité par partie, réglable de 0 à 5.</li>
+        <li><strong>Carte Joker « Je / J' »</strong> : une fois par partie, au lieu de répondre normalement, la Cible invente sa propre réponse commençant par « Je » ou « J' ». Le groupe vote ; si la majorité valide, +3 points.</li>
+        <li>À la fin, le score le plus haut gagne et choisit sa récompense. Le score le plus bas reçoit un gage, tiré ou choisi par le groupe.</li>
+      </ol>
+      <button class="btn btn-principal" data-action="fermer-regles">J'ai compris</button>
+    </div>
+  </div>
+
+</div>
+
+<script src="peerjs.min.js"></script>
+<script src="cartes.js"></script>
+<script src="engine.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
