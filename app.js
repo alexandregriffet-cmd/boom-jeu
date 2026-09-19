@@ -197,6 +197,8 @@
       "transfert-pret": () => { if (apresTransfert) { const cb = apresTransfert; apresTransfert = null; cb(); } },
       "ouvrir-defis": () => { remplirModaleDefis(); $("#modale-defis").classList.add("ouverte"); },
       "fermer-defis": () => $("#modale-defis").classList.remove("ouverte"),
+      "ouvrir-chat": () => { rendreChat($("#chat-corps")); $("#modale-chat").classList.add("ouverte"); },
+      "fermer-chat": () => $("#modale-chat").classList.remove("ouverte"),
       "resync-invite": forcerRafraichissementInvite,
     };
     if (gestionnaires[action]) gestionnaires[action]();
@@ -572,6 +574,7 @@
       } else {
         afficherEcran("ecran-jeu");
         actualiserEcranJeu();
+        rafraichirModalesOuvertes();
       }
       } catch (e) {
         console.error("Erreur au rendu de l'état reçu", e);
@@ -738,10 +741,10 @@
     if (!el) return;
     const modifiable = contexte.role === "local" || contexte.moiId === m.cibleId;
     if (!modifiable) {
-      el.innerHTML = `<p><em>Avec qui : ${res.avecQuiReponse || "(pas encore précisé)"}</em></p>`;
+      el.innerHTML = `<p><em>Avec qui : ${echapper(res.avecQuiReponse) || "(pas encore précisé)"}</em></p>`;
       return;
     }
-    const valeurActuelle = (res.avecQuiReponse || "").replace(/"/g, "&quot;");
+    const valeurActuelle = echapper(res.avecQuiReponse || "");
     el.innerHTML = `
       <div class="reponse-avec-qui">
         <input id="champ-avec-qui-resultat" class="champ" placeholder="Avec qui ? (facultatif)" maxlength="60" value="${valeurActuelle}" />
@@ -756,7 +759,7 @@
   // pas forcément lié au tour en cours (ex : validation d'un défi).
   function apresMiseAJourEtat() {
     actualiserBarreDefis();
-    if ($("#modale-defis").classList.contains("ouverte")) remplirModaleDefis();
+    rafraichirModalesOuvertes();
     const ecran = document.querySelector(".ecran.actif");
     const id = ecran ? ecran.id : null;
     if (id === "ecran-jeu") {
@@ -765,7 +768,7 @@
       rendrePodium();
       rendreConsequences();
       rendreDefisAttenteFin();
-      rendreCommentairesFin();
+      rendreChat($("#commentaires-fin"));
     }
   }
 
@@ -1230,12 +1233,23 @@
     rendrePodium();
     rendreConsequences();
     rendreDefisAttenteFin();
-    rendreCommentairesFin();
+    rendreChat($("#commentaires-fin"));
+    rafraichirModalesOuvertes();
   }
 
-  // Petit fil de commentaires sur l'écran de fin — pour se mettre d'accord
-  // sur le gage, confirmer qu'il a été fait, ou juste chambrer le perdant.
-  // Reste accessible tant qu'on n'a pas cliqué sur « Nouvelle partie ».
+  // Échappe le texte libre saisi par les joueurs avant de l'insérer dans le
+  // HTML (chat, commentaires) — évite qu'un message contenant "<" ou "&"
+  // casse l'affichage ou s'exécute comme du HTML.
+  function echapper(texte) {
+    const d = document.createElement("div");
+    d.textContent = String(texte || "");
+    return d.innerHTML;
+  }
+
+  // Chat commun à toute la partie — visible et modifiable par tout le
+  // monde (hôte et invités), accessible depuis le bouton flottant pendant
+  // le jeu et directement sur l'écran de fin. Sert aussi à préciser "avec
+  // qui" en cas de BOOM quand le champ dédié ne suffit pas.
   function ajouterCommentaireUI(texte) {
     const t = (texte || "").trim();
     if (!t) return;
@@ -1249,37 +1263,46 @@
     apresMiseAJourEtat();
   }
 
-  function rendreCommentairesFin() {
-    const zone = $("#commentaires-fin");
+  function rendreChat(zone) {
     if (!zone || !gameState) return;
     const liste = gameState.commentaires || [];
-    let html = `<div class="bloc"><h3>💬 Petits mots</h3>`;
+    const idChamp = `champ-chat-${zone.id}`;
+    let html = "";
     if (liste.length === 0) {
-      html += `<p class="texte-aide">Dites ce qu'il y a à faire pour le gage, confirmez que c'est fait, ou chambrez le perdant…</p>`;
+      html += `<p class="texte-aide">Personne n'a encore rien écrit — dites qui, quoi, confirmez un gage, ou discutez.</p>`;
     } else {
       html += `<div class="liste-commentaires">`;
       liste.forEach((c) => {
-        html += `<p class="ligne-commentaire"><strong>${c.nom} :</strong> ${c.texte}</p>`;
+        html += `<p class="ligne-commentaire"><strong>${echapper(c.nom)} :</strong> ${echapper(c.texte)}</p>`;
       });
       html += `</div>`;
     }
     html += `
       <div class="ajout-commentaire">
-        <input id="champ-commentaire" class="champ" placeholder="Écris un mot…" maxlength="200" />
-        <button class="btn btn-secondaire" id="btn-envoyer-commentaire">Envoyer</button>
-      </div>
-    </div>`;
+        <input id="${idChamp}" class="champ" placeholder="Écris un message…" maxlength="200" />
+        <button class="btn btn-secondaire" data-envoyer-chat>Envoyer</button>
+      </div>`;
     zone.innerHTML = html;
     const envoyer = () => {
-      const champ = zone.querySelector("#champ-commentaire");
+      const champ = zone.querySelector(`#${idChamp}`);
       if (!champ) return;
       ajouterCommentaireUI(champ.value);
       champ.value = "";
+      champ.focus();
     };
-    zone.querySelector("#btn-envoyer-commentaire").addEventListener("click", envoyer);
-    zone.querySelector("#champ-commentaire").addEventListener("keydown", (ev) => {
+    zone.querySelector("[data-envoyer-chat]").addEventListener("click", envoyer);
+    zone.querySelector(`#${idChamp}`).addEventListener("keydown", (ev) => {
       if (ev.key === "Enter") envoyer();
     });
+  }
+
+  // Rafraîchit le contenu des modales ouvertes (défis, chat) après tout
+  // changement d'état reçu — pour que ce qui est déjà affiché à l'écran
+  // reste à jour sans que le joueur ait besoin de refermer/rouvrir.
+  function rafraichirModalesOuvertes() {
+    if ($("#modale-defis").classList.contains("ouverte")) remplirModaleDefis();
+    const modaleChat = $("#modale-chat");
+    if (modaleChat && modaleChat.classList.contains("ouverte")) rendreChat($("#chat-corps"));
   }
 
   // ------------------------------------------------------------

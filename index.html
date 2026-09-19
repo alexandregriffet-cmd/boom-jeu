@@ -139,6 +139,8 @@
     <div id="zone-carte" class="zone-carte"></div>
 
     <div id="zone-action" class="zone-action"></div>
+
+    <button class="bouton-chat-flottant" data-action="ouvrir-chat">💬</button>
   </section>
 
   <!-- ============ FIN DE PARTIE ============ -->
@@ -150,6 +152,16 @@
     <div id="commentaires-fin"></div>
     <button class="btn btn-principal" data-action="retour-accueil">Nouvelle partie</button>
   </section>
+
+  <!-- ============ CHAT (modale) ============ -->
+  <div id="modale-chat" class="modale">
+    <div class="modale-contenu">
+      <button class="modale-fermer" data-action="fermer-chat">✕</button>
+      <h2>Chat 💬</h2>
+      <p class="texte-aide">Visible par tout le monde — pour dire qui, quoi, confirmer un gage, ou juste discuter.</p>
+      <div id="chat-corps"></div>
+    </div>
+  </div>
 
   <!-- ============ DÉFIS EN ATTENTE (modale) ============ -->
   <div id="modale-defis" class="modale">

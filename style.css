@@ -249,6 +249,16 @@ h3 { font-size: 1rem; margin: 0 0 10px; color: var(--texte-att); text-transform:
 
 .zone-action { display: flex; flex-direction: column; gap: 12px; }
 
+.bouton-chat-flottant {
+  position: fixed; right: 18px; bottom: 22px; z-index: 40;
+  width: 54px; height: 54px; border-radius: 50%; border: none;
+  background: linear-gradient(135deg, var(--accent), var(--violet));
+  color: #fff; font-size: 1.4rem; cursor: pointer;
+  box-shadow: 0 8px 20px -6px rgba(0,0,0,.6);
+}
+#chat-corps { max-height: 60vh; display: flex; flex-direction: column; }
+#chat-corps .liste-commentaires { flex: 1; overflow-y: auto; max-height: 45vh; }
+
 .grille-reactions { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .btn-reaction {
   padding: 16px 10px; border-radius: 16px; border: 2px solid rgba(255,255,255,.12);

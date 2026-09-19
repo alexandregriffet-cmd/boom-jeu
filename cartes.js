@@ -74,6 +74,14 @@ const CARTES_BRUTES = [
   c("doux", "Cuisiner un brunch complet pour {cible} demain matin", true),
   c("doux", "", true, false, true),
   c("doux", "", true, false, true),
+  c("doux", "", true, false, true),
+  c("doux", "", true, false, true),
+  c("doux", "", true, false, true),
+  c("doux", "", true, false, true),
+  c("doux", "", true, false, true),
+  c("doux", "", true, false, true),
+  c("doux", "", true, false, true),
+  c("doux", "", true, false, true),
 
   // ------------------------------------------------------------
   // PIQUANT — social, un peu gênant, drôle
@@ -118,6 +126,14 @@ const CARTES_BRUTES = [
   c("piquant", "Partager ton dernier message doux envoyé à quelqu'un, sans dire à qui"),
   c("piquant", "Faire un massage d'épaules d'une minute à {cible}", true),
   c("piquant", "Avouer ce que tu as pensé en arrivant ce soir en voyant {cible}", true),
+  c("piquant", "", true, false, true),
+  c("piquant", "", true, false, true),
+  c("piquant", "", true, false, true),
+  c("piquant", "", true, false, true),
+  c("piquant", "", true, false, true),
+  c("piquant", "", true, false, true),
+  c("piquant", "", true, false, true),
+  c("piquant", "", true, false, true),
   c("piquant", "", true, false, true),
   c("piquant", "", true, false, true),
 
@@ -332,6 +348,14 @@ const CARTES_BRUTES = [
 
   c("coquin", "", true, false, true),
   c("coquin", "", true, false, true),
+  c("coquin", "", true, false, true),
+  c("coquin", "", true, false, true),
+  c("coquin", "", true, false, true),
+  c("coquin", "", true, false, true),
+  c("coquin", "", true, false, true),
+  c("coquin", "", true, false, true),
+  c("coquin", "", true, false, true),
+  c("coquin", "", true, false, true),
 
   // ------------------------------------------------------------
   // BRÛLANT — le plus assumé, toujours suggéré, jamais explicite
@@ -469,6 +493,14 @@ const CARTES_BRUTES = [
   c("brulant", "Avouer quel fruit défendu (prune) tu croquerais sans une seconde d'hésitation ce soir, et pourquoi lui"),
   c("brulant", "Avouer quel fruit défendu (pêche) tu croquerais sans une seconde d'hésitation ce soir, et pourquoi lui"),
 
+  c("brulant", "", true, false, true),
+  c("brulant", "", true, false, true),
+  c("brulant", "", true, false, true),
+  c("brulant", "", true, false, true),
+  c("brulant", "", true, false, true),
+  c("brulant", "", true, false, true),
+  c("brulant", "", true, false, true),
+  c("brulant", "", true, false, true),
   c("brulant", "", true, false, true),
   c("brulant", "", true, false, true),
 
