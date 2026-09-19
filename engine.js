@@ -296,12 +296,16 @@
       .map((j, i) => ({ rang: i + 1, ...j }));
   }
 
-  function tirerGage(state, niveauGage, rng = state.rng) {
+  function tirerGage(state, niveauGage, rng = (typeof state.rng === "function" ? state.rng : Math.random)) {
     const liste = NIVEAUX_GAGES[niveauGage] || NIVEAUX_GAGES.doux;
     return liste[Math.floor(rng() * liste.length)];
   }
 
   function terminerPartie(state, niveauGage = "piquant") {
+    // state.rng ne survit pas forcément à un aller-retour réseau (ex :
+    // Firebase, qui refuse de stocker des fonctions) : on retombe sur
+    // Math.random si besoin plutôt que de planter.
+    const rng = typeof state.rng === "function" ? state.rng : Math.random;
     state.terminee = true;
     const classe = classement(state);
     const gagnants = classe.filter((j) => j.score === classe[0].score);
@@ -311,8 +315,8 @@
       classement: classe,
       gagnants,
       perdants,
-      recompenseSuggeree: RECOMPENSES_GAGNANT[Math.floor(state.rng() * RECOMPENSES_GAGNANT.length)],
-      gageSuggere: tirerGage(state, niveauGage),
+      recompenseSuggeree: RECOMPENSES_GAGNANT[Math.floor(rng() * RECOMPENSES_GAGNANT.length)],
+      gageSuggere: tirerGage(state, niveauGage, rng),
     };
   }
 

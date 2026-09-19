@@ -100,7 +100,11 @@
     const gestionnaires = {
       "mode-local": () => demarrerConfiguration("local"),
       "mode-hote": () => demarrerConfiguration("hote"),
-      "mode-invite": () => afficherEcran("ecran-rejoindre"),
+      "mode-invite": () => {
+        contexte.packEnCours = null;
+        $$("#ecran-rejoindre .btn-pack").forEach((b) => b.classList.remove("actif"));
+        afficherEcran("ecran-rejoindre");
+      },
       "retour-accueil": () => { reinitialiser(); afficherEcran("ecran-accueil"); },
       "voir-regles": () => $("#modale-regles").classList.add("ouverte"),
       "fermer-regles": () => $("#modale-regles").classList.remove("ouverte"),
@@ -369,7 +373,19 @@
 
   function diffuser() {
     if (!refSalon) return;
-    refSalon.child("etat").set(gameState).catch((e) => console.error("Échec d'envoi de l'état", e));
+    // gameState contient un champ "rng" (une fonction, pour le tirage
+    // aléatoire des cartes) que Firebase refuse de stocker — contrairement
+    // à l'ancien transport PeerJS, il ne l'ignore pas silencieusement, il
+    // lève une erreur. Un aller-retour JSON élimine proprement toute
+    // fonction (et toute valeur "undefined") avant l'envoi.
+    let etatSerialisable;
+    try {
+      etatSerialisable = JSON.parse(JSON.stringify(gameState));
+    } catch (e) {
+      console.error("État de partie non sérialisable", e);
+      return;
+    }
+    refSalon.child("etat").set(etatSerialisable).catch((e) => console.error("Échec d'envoi de l'état", e));
   }
 
   // ------------------------------------------------------------
@@ -381,11 +397,13 @@
     $("#erreur-rejoindre").textContent = "";
     if (code.length !== 4) { $("#erreur-rejoindre").textContent = "Le code fait 4 lettres."; return; }
     if (!nom) { $("#erreur-rejoindre").textContent = "Donne ton prénom."; return; }
+    if (!contexte.packEnCours) { $("#erreur-rejoindre").textContent = "Choisis un paquet, M ou B."; return; }
     if (!db) { $("#erreur-rejoindre").textContent = "Connexion en ligne indisponible (configuration manquante)."; return; }
 
     contexte.role = "invite";
     codeSalonRejoint = code;
     nomInvite = nom;
+    const packInvite = contexte.packEnCours;
     if (!monJoueurId) monJoueurId = genererIdJoueur();
     contexte.moiId = monJoueurId;
     $("#erreur-rejoindre").textContent = "Connexion au salon…";
@@ -399,7 +417,7 @@
           return;
         }
         refSalon = cible;
-        return refSalon.child("inscriptions/" + monJoueurId).set({ nom: nomInvite, pack: "M" });
+        return refSalon.child("inscriptions/" + monJoueurId).set({ nom: nomInvite, pack: packInvite });
       })
       .then(() => {
         if (!refSalon) return; // le salon n'existait pas, déjà signalé plus haut
