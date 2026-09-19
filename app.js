@@ -373,13 +373,18 @@
     ecouter(refSalon.child("actions"), "child_added", (snap) => {
       const msg = snap.val();
       snap.ref.remove().catch(() => {});
-      if (!msg || !gameState) return;
+      if (!msg) return;
+      if (!gameState) {
+        if (msg.joueurId) signalerErreurInvite(msg.joueurId, "La partie n'a pas encore démarré côté hôte.");
+        return;
+      }
       try {
         appliquerAction(msg.type, msg.payload || {}, msg.joueurId);
         diffuser();
         apresMiseAJourEtat();
       } catch (e) {
         console.error("Action invalide reçue de " + msg.joueurId, e);
+        if (msg.joueurId) signalerErreurInvite(msg.joueurId, e.message);
       }
     });
   }
@@ -388,6 +393,17 @@
     if (!refSalon) return;
     const liste = contexte.joueursLocaux.map((j) => ({ nom: j.nom, pack: j.pack }));
     refSalon.child("lobby").set({ joueurs: liste }).catch((e) => console.error("Échec d'envoi du lobby", e));
+  }
+
+  // Un invité dont l'action a été refusée par l'hôte (mauvais tour, id
+  // inconnu…) ne voit sinon rien du tout se passer — on lui remonte le
+  // vrai message d'erreur plutôt que de le laisser taper dans le vide.
+  function signalerErreurInvite(joueurId, message) {
+    if (!refSalon) return;
+    refSalon
+      .child("erreurs/" + joueurId)
+      .set({ message, ts: firebase.database.ServerValue.TIMESTAMP })
+      .catch(() => {});
   }
 
   function diffuser() {
@@ -481,14 +497,38 @@
         actualiserEcranJeu();
       }
     });
+
+    // Une action refusée par l'hôte (mauvais tour, état désynchronisé…)
+    // sinon ne se voit jamais côté invité : l'écran reste figé sans
+    // explication. On affiche le vrai message ici.
+    ecouter(refSalon.child("erreurs/" + monJoueurId), "value", (snap) => {
+      const val = snap.val();
+      if (!val) return;
+      const zone = $("#zone-action");
+      if (zone) {
+        zone.innerHTML = `<div class="texte-erreur">⚠️ ${val.message}</div><p class="texte-aide">On resynchronise automatiquement dans un instant…</p>`;
+      }
+      refSalon.child("erreurs/" + monJoueurId).remove().catch(() => {});
+      // Le prochain "etat" venant de l'hôte remettra l'écran à jour ; en
+      // attendant, on redemande l'état actuel pour ne pas rester bloqué
+      // sur ce message si l'hôte ne rediffuse pas de lui-même.
+      forcerRafraichissementInvite();
+    });
   }
 
   function envoyerActionInvite(type, payload) {
     if (!refSalon) return;
+    const zone = $("#zone-action");
+    if (zone) zone.innerHTML = `<div class="zone-attente-cible">Envoi…</div>`;
     refSalon
       .child("actions")
       .push({ type, payload: payload || {}, joueurId: monJoueurId, ts: firebase.database.ServerValue.TIMESTAMP })
-      .catch((e) => console.error("Échec d'envoi de l'action", e));
+      .catch((e) => {
+        console.error("Échec d'envoi de l'action", e);
+        if (zone) {
+          zone.innerHTML = `<div class="texte-erreur">⚠️ Échec de l'envoi (${e.message || "erreur réseau"}). Vérifie ta connexion et réessaie.</div>`;
+        }
+      });
   }
 
   // Bouton « Réessayer » de la salle d'attente : Firebase se
