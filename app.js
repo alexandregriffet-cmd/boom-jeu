@@ -37,17 +37,16 @@
   // Le STUN seul suffit quand les deux joueurs sont sur le même réseau ;
   // dès qu'ils sont sur des réseaux différents (4G, box différentes...),
   // un relais TURN est souvent indispensable pour que la connexion passe.
-  // Ceux-ci sont les identifiants publics du service gratuit OpenRelay —
-  // si le salon en ligne devient peu fiable avec beaucoup de monde, il
-  // est possible de créer ses propres identifiants gratuits sur
-  // metered.ca ou Twilio et de les remplacer ici.
+  // Identifiants TURN dédiés (compte gratuit Metered — 50 Go/mois).
+  const TURN_USER = "2a539e1e1a1eca6d09ce057b";
+  const TURN_PASS = "GsFQ91A8uWjvZGje";
   const CONFIG_ICE = {
     iceServers: [
-      { urls: "stun:stun.l.google.com:19302" },
       { urls: "stun:stun.relay.metered.ca:80" },
-      { urls: "turn:global.relay.metered.ca:80", username: "openrelayproject", credential: "openrelayproject" },
-      { urls: "turn:global.relay.metered.ca:443", username: "openrelayproject", credential: "openrelayproject" },
-      { urls: "turn:global.relay.metered.ca:443?transport=tcp", username: "openrelayproject", credential: "openrelayproject" },
+      { urls: "turn:global.relay.metered.ca:80", username: TURN_USER, credential: TURN_PASS },
+      { urls: "turn:global.relay.metered.ca:80?transport=tcp", username: TURN_USER, credential: TURN_PASS },
+      { urls: "turn:global.relay.metered.ca:443", username: TURN_USER, credential: TURN_PASS },
+      { urls: "turns:global.relay.metered.ca:443?transport=tcp", username: TURN_USER, credential: TURN_PASS },
     ],
   };
 
