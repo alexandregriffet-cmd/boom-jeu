@@ -92,6 +92,7 @@
       "transfert-pret": () => { if (apresTransfert) { const cb = apresTransfert; apresTransfert = null; cb(); } },
       "ouvrir-defis": () => { remplirModaleDefis(); $("#modale-defis").classList.add("ouverte"); },
       "fermer-defis": () => $("#modale-defis").classList.remove("ouverte"),
+      "resync-invite": demanderResync,
     };
     if (gestionnaires[action]) gestionnaires[action]();
   });
@@ -132,6 +133,7 @@
     hostConns = {};
     clientConn = null;
     codeSalon = null;
+    arreterBattementCoeur();
   }
 
   // ------------------------------------------------------------
@@ -252,7 +254,28 @@
       diffuser({ t: "etat", state: gameState });
       afficherEcran("ecran-jeu");
       actualiserEcranJeu();
+      demarrerBattementCoeur();
     }
+  }
+
+  // ------------------------------------------------------------
+  // Battement de cœur hôte : rediffuse l'état régulièrement pour
+  // rattraper un message perdu en route (réseau instable / TURN).
+  // ------------------------------------------------------------
+  let battementCoeurId = null;
+  function demarrerBattementCoeur() {
+    if (battementCoeurId) return;
+    battementCoeurId = setInterval(() => {
+      if (contexte.role !== "hote") { arreterBattementCoeur(); return; }
+      if (gameState) {
+        diffuser({ t: "etat", state: gameState });
+      } else {
+        diffuserLobby();
+      }
+    }, 4000);
+  }
+  function arreterBattementCoeur() {
+    if (battementCoeurId) { clearInterval(battementCoeurId); battementCoeurId = null; }
   }
 
   // ------------------------------------------------------------
@@ -278,6 +301,7 @@
     peer.on("open", () => {
       $("#statut-salon").textContent = "✅ Salon prêt — donne ce code aux autres joueurs.";
       $("#erreur-config").textContent = "";
+      demarrerBattementCoeur();
     });
     peer.on("error", (err) => {
       console.error("Erreur PeerJS", err);
@@ -322,6 +346,18 @@
         diffuserLobby();
       } else {
         conn.send({ t: "erreur", message: "La partie a déjà commencé." });
+      }
+      return;
+    }
+
+    if (msg.t === "resync") {
+      // Un client redemande l'état courant (message précédent perdu en route)
+      hostConns[conn.peer] = conn;
+      if (gameState) {
+        conn.send({ t: "etat", state: gameState });
+      } else {
+        conn.send({ t: "bienvenue", joueurId: conn.peer });
+        diffuserLobby();
       }
       return;
     }
@@ -430,6 +466,15 @@
 
   function envoyerActionInvite(type, payload) {
     if (clientConn) clientConn.send({ t: "action", type, payload });
+  }
+
+  function demanderResync() {
+    if (clientConn && clientConn.open) {
+      $("#statut-connexion").textContent = "Resynchronisation…";
+      try { clientConn.send({ t: "resync" }); } catch (e) {}
+    } else {
+      $("#statut-connexion").textContent = "Connexion coupée. Reviens à l'accueil et rejoins à nouveau le salon.";
+    }
   }
 
   // ------------------------------------------------------------
