@@ -127,6 +127,30 @@
     }
   });
 
+  // ------------------------------------------------------------
+  // Retour au premier plan : les navigateurs mobiles suspendent souvent
+  // le réseau (et gèlent les setInterval) pendant que l'onglet est en
+  // arrière-plan. On ne peut donc pas compter sur la veille automatique
+  // pendant ce temps-là — il faut vérifier/relancer dès que l'appli
+  // redevient visible, sans attendre.
+  // ------------------------------------------------------------
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState !== "visible") return;
+    if (contexte.role === "invite" && codeSalonRejoint) {
+      demanderResync();
+    } else if (contexte.role === "hote" && peer) {
+      if (peer.disconnected && !peer.destroyed) {
+        try { peer.reconnect(); } catch (e) {}
+      }
+      if (gameState) diffuser({ t: "etat", state: gameState });
+      else diffuserLobby();
+    }
+  });
+  window.addEventListener("pageshow", (ev) => {
+    if (!ev.persisted) return; // page restaurée depuis le bfcache : même traitement
+    if (contexte.role === "invite" && codeSalonRejoint) demanderResync();
+  });
+
   function reinitialiser() {
     contexte.role = null;
     contexte.moiId = null;
@@ -448,6 +472,11 @@
     peer.on("error", (err) => {
       console.error("Erreur PeerJS", err);
       $("#erreur-rejoindre").textContent = "Salon introuvable. Vérifie le code.";
+    });
+    peer.on("disconnected", () => {
+      // Signal perdu avec le serveur PeerJS (fréquent après une mise en
+      // veille) : si on avait déjà rejoint la partie, on resynchronise.
+      if (contexte.moiId) demanderResync();
     });
   }
 
