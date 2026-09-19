@@ -112,11 +112,40 @@
     if (!etat.defisEnAttente) etat.defisEnAttente = [];
     if (!etat.cartesUtilisees) etat.cartesUtilisees = [];
     if (!etat.historique) etat.historique = [];
+    if (!etat.commentaires) etat.commentaires = [];
     if (etat.manche) {
       if (!etat.manche.paris) etat.manche.paris = {};
       if (etat.manche.joker && !etat.manche.joker.votes) etat.manche.joker.votes = {};
     }
     return etat;
+  }
+
+  // ------------------------------------------------------------
+  // Session en ligne persistante — le salon Firebase lui-même n'expire
+  // jamais tout seul (aucune limite de temps côté serveur). Le seul risque
+  // de "code périmé" vient du téléphone qui recharge la page (mise en
+  // veille prolongée, appli relancée…), ce qui efface la mémoire de
+  // l'appli. On garde donc le code + l'identité du joueur dans le
+  // stockage local du téléphone, pour se rebrancher automatiquement sur
+  // le même salon au prochain chargement, même des heures plus tard.
+  // ------------------------------------------------------------
+  const CLE_SESSION = "boom_session_v1";
+
+  function sauvegarderSession(donnees) {
+    try {
+      localStorage.setItem(CLE_SESSION, JSON.stringify({ ...donnees, ts: Date.now() }));
+    } catch (e) {}
+  }
+  function chargerSession() {
+    try {
+      const brut = localStorage.getItem(CLE_SESSION);
+      return brut ? JSON.parse(brut) : null;
+    } catch (e) {
+      return null;
+    }
+  }
+  function effacerSession() {
+    try { localStorage.removeItem(CLE_SESSION); } catch (e) {}
   }
 
   // ------------------------------------------------------------
@@ -229,6 +258,7 @@
     codeSalonRejoint = null;
     nomInvite = null;
     monJoueurId = null;
+    effacerSession();
   }
 
   // ------------------------------------------------------------
@@ -372,17 +402,27 @@
     refSalon
       .set({ cree: firebase.database.ServerValue.TIMESTAMP, lobby: { joueurs: [] }, demarree: false })
       .then(() => {
-        $("#statut-salon").textContent = "✅ Salon prêt — donne ce code aux autres joueurs.";
+        $("#statut-salon").textContent = "✅ Salon prêt — donne ce code aux autres joueurs. Il reste valable toute la journée, quel que soit le temps que ça prend pour rejoindre.";
         $("#erreur-config").textContent = "";
+        sauvegarderSession({ role: "hote", codeSalon, monJoueurId });
       })
       .catch((e) => {
         console.error("Erreur Firebase (création du salon)", e);
         $("#statut-salon").textContent = "Impossible de créer le salon (vérifie ta connexion internet).";
       });
 
+    attacherEcouteursHote();
+  }
+
+  // Écouteurs propres à l'hôte : inscriptions des invités + actions reçues
+  // pendant la partie. Isolé dans sa propre fonction pour pouvoir être
+  // rebranché tel quel après une reprise de salon (voir tenterReprendreHote).
+  function attacherEcouteursHote() {
     // Un invité écrit sa propre inscription ; on l'ajoute au lobby local
     // dès qu'elle apparaît (une reconnexion réécrit la même entrée, donc
-    // pas de doublon possible).
+    // pas de doublon possible). Ce nœud n'est jamais supprimé côté Firebase
+    // tant que l'hôte ne ferme pas le salon lui-même : un invité peut donc
+    // rejoindre à n'importe quel moment de la journée, sans limite de temps.
     ecouter(refSalon.child("inscriptions"), "value", (snap) => {
       if (gameState) return; // partie déjà lancée : plus de nouvelles entrées
       const inscriptions = snap.val() || {};
@@ -491,6 +531,7 @@
       })
       .then(() => {
         if (!refSalon) return; // le salon n'existait pas, déjà signalé plus haut
+        sauvegarderSession({ role: "invite", codeSalonRejoint: code, monJoueurId, nomInvite });
         afficherEcran("ecran-attente");
         $("#statut-connexion").textContent = "Connecté ! En attente du lancement par l'hôte…";
         ecouterSalonInvite();
@@ -634,6 +675,12 @@
       case "manche-suivante":
         Engine.demarrerManche(gameState);
         break;
+      case "avec-qui":
+        Engine.preciserAvecQui(gameState, actorId, payload.texte);
+        break;
+      case "commentaire":
+        Engine.ajouterCommentaire(gameState, actorId, payload.texte);
+        break;
       default:
         throw new Error("Action inconnue : " + type);
     }
@@ -666,6 +713,45 @@
     apresMiseAJourEtat();
   }
 
+  // Précise (ou corrige) le "avec qui" une fois la manche révélée — utilise
+  // le même schéma que validerDefiUI (pas envoyerAction) pour rester sur
+  // l'écran de résultat sans relancer le passage de téléphone du mode local.
+  function preciserAvecQuiUI(texte) {
+    if (contexte.role === "invite") {
+      envoyerActionInvite("avec-qui", { texte });
+      return;
+    }
+    // En mode local, personne n'est "propriétaire" de l'appareil au moment
+    // de la révélation (le téléphone est posé au milieu du groupe) : on agit
+    // directement au nom de la Cible plutôt que de dépendre de contexte.moiId.
+    const idActeur = contexte.role === "local" ? gameState.manche.cibleId : contexte.moiId;
+    Engine.preciserAvecQui(gameState, idActeur, texte);
+    if (contexte.role === "hote") diffuser();
+    apresMiseAJourEtat();
+  }
+
+  // Affiche, dans la zone réservée du résultat, soit le champ éditable pour
+  // la Cible (elle peut préciser/corriger à tout moment après la révélation
+  // — plus besoin d'avoir rempli le champ avant de répondre), soit la
+  // réponse en lecture seule pour les autres joueurs.
+  function rendreBlocAvecQui(el, m, res) {
+    if (!el) return;
+    const modifiable = contexte.role === "local" || contexte.moiId === m.cibleId;
+    if (!modifiable) {
+      el.innerHTML = `<p><em>Avec qui : ${res.avecQuiReponse || "(pas encore précisé)"}</em></p>`;
+      return;
+    }
+    const valeurActuelle = (res.avecQuiReponse || "").replace(/"/g, "&quot;");
+    el.innerHTML = `
+      <div class="reponse-avec-qui">
+        <input id="champ-avec-qui-resultat" class="champ" placeholder="Avec qui ? (facultatif)" maxlength="60" value="${valeurActuelle}" />
+        <button class="btn btn-secondaire" id="btn-valider-avec-qui">✓ Valider</button>
+      </div>`;
+    el.querySelector("#btn-valider-avec-qui").addEventListener("click", () => {
+      preciserAvecQuiUI(el.querySelector("#champ-avec-qui-resultat").value.trim());
+    });
+  }
+
   // Rafraîchit ce qui doit l'être après un changement d'état qui n'est
   // pas forcément lié au tour en cours (ex : validation d'un défi).
   function apresMiseAJourEtat() {
@@ -679,6 +765,7 @@
       rendrePodium();
       rendreConsequences();
       rendreDefisAttenteFin();
+      rendreCommentairesFin();
     }
   }
 
@@ -977,7 +1064,7 @@
             <p class="titre-boom">BOOM 💥</p>
             <p>${cible.nom} répond : <strong>${reaction.texte}</strong></p>
             <p>Personne n'avait deviné — +2 pour ${cible.nom} !</p>
-            ${m.avecQui ? `<p><em>Avec qui : ${res.avecQuiReponse || "(non précisé)"}</em></p>` : ""}
+            ${m.avecQui ? `<div id="bloc-avec-qui"></div>` : ""}
           </div>`;
       } else {
         const noms = res.gagnantsPari.map((id) => nomJoueur(id)).join(", ");
@@ -985,7 +1072,7 @@
           <div class="resultat-calme">
             <h4>${cible.nom} répond : ${reaction.texte}</h4>
             <p>Bien deviné par : ${noms} (+1 chacun)</p>
-            ${m.avecQui ? `<p><em>Avec qui : ${res.avecQuiReponse || "(non précisé)"}</em></p>` : ""}
+            ${m.avecQui ? `<div id="bloc-avec-qui"></div>` : ""}
           </div>`;
       }
     }
@@ -1009,6 +1096,10 @@
       ? `<button class="btn btn-principal" id="btn-manche-suivante">Manche suivante ➡️</button>`
       : `<div class="zone-attente-cible">En attente de l'hôte pour la suite…</div>`);
 
+    if (m.avecQui && res.type === "manche") {
+      rendreBlocAvecQui(zone.querySelector("#bloc-avec-qui"), m, res);
+    }
+
     if (encoreEnAttente) {
       zone.querySelectorAll("[data-defi-valider]").forEach((b) => {
         b.addEventListener("click", () => {
@@ -1024,8 +1115,21 @@
           demarrerMancheEtTransferer();
         } else {
           const m2 = Engine.demarrerManche(gameState);
+          if (!m2) {
+            // Partie terminée : on fige la récompense/le gage tirés
+            // (Engine.terminerPartie mémorise le tirage dans
+            // gameState.finale) AVANT de diffuser, pour que tous les
+            // invités reçoivent exactement le même résultat au lieu
+            // d'en tirer un différent chacun de leur côté.
+            finActuelle = Engine.terminerPartie(gameState, "piquant");
+            diffuser();
+            afficherEcran("ecran-fin");
+            rendrePodium();
+            rendreConsequences();
+            rendreDefisAttenteFin();
+            return;
+          }
           diffuser();
-          if (!m2) { afficherFin(); return; }
           actualiserEcranJeu();
         }
       });
@@ -1126,5 +1230,148 @@
     rendrePodium();
     rendreConsequences();
     rendreDefisAttenteFin();
+    rendreCommentairesFin();
   }
+
+  // Petit fil de commentaires sur l'écran de fin — pour se mettre d'accord
+  // sur le gage, confirmer qu'il a été fait, ou juste chambrer le perdant.
+  // Reste accessible tant qu'on n'a pas cliqué sur « Nouvelle partie ».
+  function ajouterCommentaireUI(texte) {
+    const t = (texte || "").trim();
+    if (!t) return;
+    if (contexte.role === "invite") {
+      envoyerActionInvite("commentaire", { texte: t });
+      return;
+    }
+    const idActeur = contexte.moiId || (gameState.joueurs[0] && gameState.joueurs[0].id);
+    Engine.ajouterCommentaire(gameState, idActeur, t);
+    if (contexte.role === "hote") diffuser();
+    apresMiseAJourEtat();
+  }
+
+  function rendreCommentairesFin() {
+    const zone = $("#commentaires-fin");
+    if (!zone || !gameState) return;
+    const liste = gameState.commentaires || [];
+    let html = `<div class="bloc"><h3>💬 Petits mots</h3>`;
+    if (liste.length === 0) {
+      html += `<p class="texte-aide">Dites ce qu'il y a à faire pour le gage, confirmez que c'est fait, ou chambrez le perdant…</p>`;
+    } else {
+      html += `<div class="liste-commentaires">`;
+      liste.forEach((c) => {
+        html += `<p class="ligne-commentaire"><strong>${c.nom} :</strong> ${c.texte}</p>`;
+      });
+      html += `</div>`;
+    }
+    html += `
+      <div class="ajout-commentaire">
+        <input id="champ-commentaire" class="champ" placeholder="Écris un mot…" maxlength="200" />
+        <button class="btn btn-secondaire" id="btn-envoyer-commentaire">Envoyer</button>
+      </div>
+    </div>`;
+    zone.innerHTML = html;
+    const envoyer = () => {
+      const champ = zone.querySelector("#champ-commentaire");
+      if (!champ) return;
+      ajouterCommentaireUI(champ.value);
+      champ.value = "";
+    };
+    zone.querySelector("#btn-envoyer-commentaire").addEventListener("click", envoyer);
+    zone.querySelector("#champ-commentaire").addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter") envoyer();
+    });
+  }
+
+  // ------------------------------------------------------------
+  // Reprise automatique de session — se rebranche sur le même salon
+  // après un rechargement de page (mise en veille prolongée, appli
+  // relancée…), sans jamais avoir besoin d'un nouveau code. Le salon
+  // Firebase, lui, ne disparaît jamais tout seul : seule une fermeture
+  // explicite (bouton « Retour » / « Nouvelle partie ») le supprime.
+  // ------------------------------------------------------------
+  function tenterReprendreHote(session) {
+    codeSalon = session.codeSalon;
+    monJoueurId = session.monJoueurId;
+    refSalon = db.ref("salons/" + codeSalon);
+    refSalon
+      .get()
+      .then((snap) => {
+        if (!snap.exists()) { effacerSession(); return; } // salon fermé entre-temps
+        const val = snap.val() || {};
+        contexte.role = "hote";
+        contexte.moiId = monJoueurId;
+
+        if (val.etat) {
+          // La partie était déjà lancée : on reconstruit l'état de jeu à
+          // partir de la dernière version connue de Firebase (le tirage
+          // aléatoire n'a pas besoin d'être identique à avant, une nouvelle
+          // fonction suffit pour la suite de la partie).
+          gameState = normaliserEtat(val.etat);
+          if (typeof gameState.rng !== "function") gameState.rng = Math.random;
+          contexte.joueursLocaux = gameState.joueurs.map((j) => ({
+            id: j.id, nom: j.nom, pack: j.pack, distant: j.id !== monJoueurId,
+          }));
+          attacherEcouteursHote();
+          if (gameState.terminee) afficherFin();
+          else { afficherEcran("ecran-jeu"); actualiserEcranJeu(); }
+        } else {
+          // Toujours dans la salle d'attente : on restaure l'écran de
+          // configuration avec la liste de joueurs déjà inscrits.
+          demarrerConfiguration("hote");
+          const inscriptions = val.inscriptions || {};
+          contexte.joueursLocaux = [{ id: monJoueurId, nom: "Moi", pack: "M" }];
+          Object.keys(inscriptions).forEach((id) => {
+            if (id === monJoueurId) return;
+            const info = inscriptions[id] || {};
+            contexte.joueursLocaux.push({
+              id, nom: String(info.nom || "Invité").slice(0, 20),
+              pack: info.pack === "B" ? "B" : "M", distant: true,
+            });
+          });
+          redessinerListeJoueurs();
+          $("#bloc-code-salon").style.display = "block";
+          $("#affichage-code").textContent = codeSalon;
+          $("#statut-salon").textContent = "✅ Salon repris — le code est toujours valable.";
+          $("#ajout-joueur-local").style.display = "none";
+          attacherEcouteursHote();
+          afficherEcran("ecran-config");
+        }
+      })
+      .catch((e) => console.error("Erreur Firebase (reprise du salon hôte)", e));
+  }
+
+  function tenterReprendreInvite(session) {
+    monJoueurId = session.monJoueurId;
+    codeSalonRejoint = session.codeSalonRejoint;
+    nomInvite = session.nomInvite;
+    const cible = db.ref("salons/" + codeSalonRejoint);
+    cible
+      .get()
+      .then((snap) => {
+        if (!snap.exists()) { effacerSession(); return; } // salon fermé entre-temps
+        refSalon = cible;
+        contexte.role = "invite";
+        contexte.moiId = monJoueurId;
+        afficherEcran("ecran-attente");
+        $("#statut-connexion").textContent = "Reconnecté ! Synchronisation en cours…";
+        ecouterSalonInvite();
+        forcerRafraichissementInvite();
+      })
+      .catch((e) => console.error("Erreur Firebase (reprise du salon invité)", e));
+  }
+
+  function tenterRepriseSession() {
+    if (!db) return;
+    const session = chargerSession();
+    if (!session || !session.role) return;
+    if (session.role === "hote" && session.codeSalon && session.monJoueurId) {
+      tenterReprendreHote(session);
+    } else if (session.role === "invite" && session.codeSalonRejoint && session.monJoueurId) {
+      tenterReprendreInvite(session);
+    } else {
+      effacerSession();
+    }
+  }
+
+  tenterRepriseSession();
 })();

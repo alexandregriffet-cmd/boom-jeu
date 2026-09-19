@@ -190,6 +190,16 @@ h3 { font-size: 1rem; margin: 0 0 10px; color: var(--texte-att); text-transform:
   background: var(--carte); border-radius: 14px; padding: 16px; color: var(--accent-2);
 }
 
+/* ---------- "Avec qui" à la révélation & commentaires ---------- */
+.reponse-avec-qui { display: flex; gap: 8px; align-items: center; margin-top: 4px; }
+.reponse-avec-qui .champ { margin-bottom: 0; }
+.liste-commentaires { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; }
+.ligne-commentaire {
+  background: var(--carte); border-radius: 12px; padding: 10px 12px; margin: 0; font-size: .95rem;
+}
+.ajout-commentaire { display: flex; gap: 8px; align-items: center; }
+.ajout-commentaire .champ { margin-bottom: 0; }
+
 /* ---------- Transfert ---------- */
 #ecran-transfert { justify-content: center; align-items: center; }
 .carte-transfert {

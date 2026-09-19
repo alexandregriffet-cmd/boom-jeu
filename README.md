@@ -57,6 +57,15 @@ un message clair (« configuration manquante ») au lieu de planter.
   et à des parties éphémères, c'est largement suffisant pour une soirée
   entre amis, mais ce n'est pas un chiffrement de bout en bout.
 
+  Un salon n'expire jamais tout seul côté serveur : un code reste valable
+  toute une journée (ou plus), même si personne ne le rejoint tout de
+  suite. Chaque téléphone (hôte comme invité) garde aussi en mémoire
+  locale le salon rejoint, pour se rebrancher automatiquement dessus si la
+  page recharge (mise en veille prolongée, appli relancée…) — inutile de
+  recréer un salon ou de retaper le code à chaque fois. Le salon n'est
+  supprimé que si l'hôte appuie explicitement sur « Retour » ou
+  « Nouvelle partie ».
+
 ## Contenu du jeu
 
 - **180 cartes** réparties en 5 niveaux : Doux, Piquant, Coquin, Brûlant et

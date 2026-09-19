@@ -70,6 +70,8 @@
       manche: null,
       historique: [],
       defisEnAttente: [],
+      commentaires: [],
+      finale: null,
       terminee: false,
     };
   }
@@ -101,11 +103,13 @@
       state.tour >= state.config.nbToursTotal
     ) {
       state.terminee = true;
+      state.manche = null;
       return null;
     }
     const carte = piocherCarte(state);
     if (!carte) {
       state.terminee = true;
+      state.manche = null;
       return null;
     }
     const cibleId = state.ordreCible[state.indexOrdre % state.ordreCible.length];
@@ -307,6 +311,18 @@
     // Math.random si besoin plutôt que de planter.
     const rng = typeof state.rng === "function" ? state.rng : Math.random;
     state.terminee = true;
+    // La récompense et le gage suggérés ne sont tirés qu'une seule fois et
+    // mémorisés dans state.finale : sans ça, chaque appareil (hôte, chaque
+    // invité) les tirait indépendamment de son côté et voyait un texte
+    // différent. state.finale fait partie de l'état synchronisé via
+    // Firebase, donc le premier tirage (celui de l'hôte) est ensuite
+    // repris tel quel par tout le monde.
+    if (!state.finale) {
+      state.finale = {
+        recompenseSuggeree: RECOMPENSES_GAGNANT[Math.floor(rng() * RECOMPENSES_GAGNANT.length)],
+        gageSuggere: tirerGage(state, niveauGage, rng),
+      };
+    }
     const classe = classement(state);
     const gagnants = classe.filter((j) => j.score === classe[0].score);
     const scoreMin = classe[classe.length - 1].score;
@@ -315,9 +331,42 @@
       classement: classe,
       gagnants,
       perdants,
-      recompenseSuggeree: RECOMPENSES_GAGNANT[Math.floor(rng() * RECOMPENSES_GAGNANT.length)],
-      gageSuggere: tirerGage(state, niveauGage, rng),
+      recompenseSuggeree: state.finale.recompenseSuggeree,
+      gageSuggere: state.finale.gageSuggere,
     };
+  }
+
+  // Permet à la Cible de préciser (ou corriger) qui elle visait, à
+  // n'importe quel moment après la révélation — plus besoin d'avoir
+  // rempli le champ avant de répondre : on peut le faire au moment du
+  // BOOM, une fois qu'on sait que ça compte.
+  function preciserAvecQui(state, joueurId, texte) {
+    const m = state.manche;
+    if (!m || m.phase !== "terminee") throw new Error("Pas le moment de préciser ça.");
+    if (!m.avecQui) throw new Error("Cette carte ne demande pas de précision.");
+    if (joueurId !== m.cibleId) throw new Error("Seule la Cible peut préciser ça.");
+    const t = (texte || "").trim().slice(0, 60);
+    m.avecQuiReponse = t;
+    if (m.resultat) m.resultat.avecQuiReponse = t;
+    return m.resultat;
+  }
+
+  // Petit fil de commentaires libres (ex : discuter du gage, confirmer
+  // qu'il a été fait…), utilisable pendant la partie ou à l'écran de fin.
+  function ajouterCommentaire(state, joueurId, texte) {
+    const t = (texte || "").trim().slice(0, 200);
+    if (!t) throw new Error("Le commentaire ne peut pas être vide.");
+    const j = joueur(state, joueurId);
+    if (!Array.isArray(state.commentaires)) state.commentaires = [];
+    const entree = {
+      id: "com" + Date.now().toString(36) + Math.floor(Math.random() * 1000),
+      joueurId,
+      nom: j.nom,
+      texte: t,
+      ts: Date.now(),
+    };
+    state.commentaires.push(entree);
+    return entree;
   }
 
   return {
@@ -337,5 +386,7 @@
     terminerPartie,
     tirerGage,
     reactionsDuPack,
+    preciserAvecQui,
+    ajouterCommentaire,
   };
 });
