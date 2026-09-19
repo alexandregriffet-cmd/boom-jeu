@@ -33,6 +33,24 @@
 
   let apresTransfert = null; // callback en attente sur l'écran de transfert
 
+  // Serveurs STUN + TURN pour la connexion directe entre deux téléphones.
+  // Le STUN seul suffit quand les deux joueurs sont sur le même réseau ;
+  // dès qu'ils sont sur des réseaux différents (4G, box différentes...),
+  // un relais TURN est souvent indispensable pour que la connexion passe.
+  // Ceux-ci sont les identifiants publics du service gratuit OpenRelay —
+  // si le salon en ligne devient peu fiable avec beaucoup de monde, il
+  // est possible de créer ses propres identifiants gratuits sur
+  // metered.ca ou Twilio et de les remplacer ici.
+  const CONFIG_ICE = {
+    iceServers: [
+      { urls: "stun:stun.l.google.com:19302" },
+      { urls: "stun:stun.relay.metered.ca:80" },
+      { urls: "turn:global.relay.metered.ca:80", username: "openrelayproject", credential: "openrelayproject" },
+      { urls: "turn:global.relay.metered.ca:443", username: "openrelayproject", credential: "openrelayproject" },
+      { urls: "turn:global.relay.metered.ca:443?transport=tcp", username: "openrelayproject", credential: "openrelayproject" },
+    ],
+  };
+
   // ------------------------------------------------------------
   // Utilitaires DOM
   // ------------------------------------------------------------
@@ -251,13 +269,15 @@
   function ouvrirSalonReseau() {
     codeSalon = genererCode();
     $("#affichage-code").textContent = codeSalon;
+    $("#statut-salon").textContent = "Ouverture du salon…";
     try {
-      peer = new Peer(`boom-${codeSalon}`);
+      peer = new Peer(`boom-${codeSalon}`, { config: CONFIG_ICE });
     } catch (e) {
-      $("#erreur-config").textContent = "Impossible de créer le salon en ligne (connexion indisponible).";
+      $("#statut-salon").textContent = "Impossible de créer le salon en ligne (connexion indisponible).";
       return;
     }
     peer.on("open", () => {
+      $("#statut-salon").textContent = "✅ Salon prêt — donne ce code aux autres joueurs.";
       $("#erreur-config").textContent = "";
     });
     peer.on("error", (err) => {
@@ -265,7 +285,13 @@
       if (err.type === "unavailable-id") {
         // Code déjà pris (rare) : on retente avec un nouveau code
         ouvrirSalonReseau();
+      } else {
+        $("#statut-salon").textContent = "Connexion en ligne instable. Réessaie si un joueur n'arrive pas à rejoindre.";
       }
+    });
+    peer.on("disconnected", () => {
+      $("#statut-salon").textContent = "Connexion perdue avec le serveur de salon, tentative de reconnexion…";
+      try { peer.reconnect(); } catch (e) {}
     });
     peer.on("connection", (conn) => {
       conn.on("open", () => {
@@ -332,23 +358,40 @@
     if (!nom) { $("#erreur-rejoindre").textContent = "Donne ton prénom."; return; }
 
     contexte.role = "invite";
+    $("#erreur-rejoindre").textContent = "Connexion au salon…";
     try {
-      peer = new Peer();
+      peer = new Peer(undefined, { config: CONFIG_ICE });
     } catch (e) {
       $("#erreur-rejoindre").textContent = "Connexion en ligne indisponible.";
       return;
     }
+
+    let rejoint = false;
+    const delaiEchec = setTimeout(() => {
+      if (!rejoint) {
+        $("#erreur-rejoindre").textContent =
+          "La connexion prend trop de temps. Vérifie le code, ou que l'hôte a bien affiché « Salon prêt ».";
+      }
+    }, 12000);
+
     peer.on("open", () => {
       clientConn = peer.connect(`boom-${code}`, { reliable: true });
       clientConn.on("open", () => {
+        rejoint = true;
+        clearTimeout(delaiEchec);
         clientConn.send({ t: "inscription", nom, pack: "M" });
       });
       clientConn.on("data", (msg) => receptionInvite(msg));
-      clientConn.on("error", () => {
+      clientConn.on("error", (err) => {
+        console.error("Erreur de connexion PeerJS", err);
         $("#erreur-rejoindre").textContent = "Salon introuvable. Vérifie le code.";
       });
+      clientConn.on("close", () => {
+        if (!rejoint) $("#erreur-rejoindre").textContent = "Connexion coupée avant d'avoir rejoint. Réessaie.";
+      });
     });
-    peer.on("error", () => {
+    peer.on("error", (err) => {
+      console.error("Erreur PeerJS", err);
       $("#erreur-rejoindre").textContent = "Salon introuvable. Vérifie le code.";
     });
   }
