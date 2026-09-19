@@ -4,6 +4,12 @@
      - local  : un seul téléphone passé de main en main
      - hote   : salon en ligne, cet appareil héberge la partie
      - invite : salon en ligne, cet appareil a rejoint via un code
+
+   Le mode en ligne passe par Firebase Realtime Database : tous les
+   téléphones parlent à un serveur central (celui de Google), jamais
+   directement entre eux. C'est ce qui rend la connexion fiable sur
+   n'importe quel réseau (4G, box, opérateurs différents...) — voir
+   firebase-config.js pour la configuration du projet.
    ============================================================ */
 
 (function () {
@@ -13,11 +19,25 @@
   const Engine = window.BoomEngine;
 
   // ------------------------------------------------------------
+  // Firebase (salon en ligne)
+  // ------------------------------------------------------------
+  let db = null;
+  try {
+    if (window.firebase && window.FIREBASE_CONFIG && window.FIREBASE_CONFIG.databaseURL) {
+      firebase.initializeApp(window.FIREBASE_CONFIG);
+      db = firebase.database();
+    }
+  } catch (e) {
+    console.error("Firebase non initialisé", e);
+    db = null;
+  }
+
+  // ------------------------------------------------------------
   // État de l'application
   // ------------------------------------------------------------
   const contexte = {
     role: null,          // 'local' | 'hote' | 'invite'
-    moiId: null,          // id du joueur qui tient l'appareil / mon id réseau
+    moiId: null,          // id du joueur qui tient l'appareil
     niveauxChoisis: NIVEAUX.map((n) => n.id),
     vetosParJoueur: 2,
     nbManches: 15,
@@ -26,32 +46,27 @@
   };
 
   let gameState = null;   // état du moteur (autorité locale ou hôte)
-  let peer = null;
-  let hostConns = {};      // hôte : joueurId -> DataConnection
-  let clientConn = null;   // invité : DataConnection vers l'hôte
-  let codeSalon = null;
-  let codeSalonRejoint = null; // invité : code du salon, gardé pour une reconnexion
-  let nomInvite = null;        // invité : prénom saisi, gardé pour une reconnexion
-  let dernierMessageRecu = 0;  // invité : horodatage du dernier message reçu de l'hôte
+  let codeSalon = null;         // hôte : code du salon qu'il héberge
+  let codeSalonRejoint = null;  // invité : code du salon rejoint
+  let nomInvite = null;         // invité : prénom saisi
+  let refSalon = null;          // référence Firebase vers /salons/<code>
+  let monJoueurId = null;       // identifiant de joueur permanent (hôte ou invité)
+  let ecouteursActifs = [];     // listeners Firebase actifs, à détacher au reset
 
   let apresTransfert = null; // callback en attente sur l'écran de transfert
 
-  // Serveurs STUN + TURN pour la connexion directe entre deux téléphones.
-  // Le STUN seul suffit quand les deux joueurs sont sur le même réseau ;
-  // dès qu'ils sont sur des réseaux différents (4G, box différentes...),
-  // un relais TURN est souvent indispensable pour que la connexion passe.
-  // Identifiants TURN dédiés (compte gratuit Metered — 50 Go/mois).
-  const TURN_USER = "2a539e1e1a1eca6d09ce057b";
-  const TURN_PASS = "GsFQ91A8uWjvZGje";
-  const CONFIG_ICE = {
-    iceServers: [
-      { urls: "stun:stun.relay.metered.ca:80" },
-      { urls: "turn:global.relay.metered.ca:80", username: TURN_USER, credential: TURN_PASS },
-      { urls: "turn:global.relay.metered.ca:80?transport=tcp", username: TURN_USER, credential: TURN_PASS },
-      { urls: "turn:global.relay.metered.ca:443", username: TURN_USER, credential: TURN_PASS },
-      { urls: "turns:global.relay.metered.ca:443?transport=tcp", username: TURN_USER, credential: TURN_PASS },
-    ],
-  };
+  function genererIdJoueur() {
+    return "j" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+  }
+
+  function ecouter(ref, event, cb) {
+    ref.on(event, cb);
+    ecouteursActifs.push({ ref, event, cb });
+  }
+  function detacherEcouteurs() {
+    ecouteursActifs.forEach(({ ref, event, cb }) => { try { ref.off(event, cb); } catch (e) {} });
+    ecouteursActifs = [];
+  }
 
   // ------------------------------------------------------------
   // Utilitaires DOM
@@ -95,7 +110,7 @@
       "transfert-pret": () => { if (apresTransfert) { const cb = apresTransfert; apresTransfert = null; cb(); } },
       "ouvrir-defis": () => { remplirModaleDefis(); $("#modale-defis").classList.add("ouverte"); },
       "fermer-defis": () => $("#modale-defis").classList.remove("ouverte"),
-      "resync-invite": demanderResync,
+      "resync-invite": forcerRafraichissementInvite,
     };
     if (gestionnaires[action]) gestionnaires[action]();
   });
@@ -127,44 +142,35 @@
     }
   });
 
-  // ------------------------------------------------------------
-  // Retour au premier plan : les navigateurs mobiles suspendent souvent
-  // le réseau (et gèlent les setInterval) pendant que l'onglet est en
-  // arrière-plan. On ne peut donc pas compter sur la veille automatique
-  // pendant ce temps-là — il faut vérifier/relancer dès que l'appli
-  // redevient visible, sans attendre.
-  // ------------------------------------------------------------
-  document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState !== "visible") return;
-    if (contexte.role === "invite" && codeSalonRejoint) {
-      demanderResync();
-    } else if (contexte.role === "hote" && peer) {
-      if (peer.disconnected && !peer.destroyed) {
-        try { peer.reconnect(); } catch (e) {}
+  // Petit indicateur de connexion internet (Firebase expose cette
+  // référence spéciale ; elle se met à jour automatiquement, y compris
+  // après une coupure/reprise réseau ou une mise en veille du téléphone).
+  if (db) {
+    db.ref(".info/connected").on("value", (snap) => {
+      const connecte = snap.val() === true;
+      if (contexte.role === "invite" && document.getElementById("ecran-attente").classList.contains("actif")) {
+        $("#statut-connexion").textContent = connecte
+          ? "Connecté ! En attente du lancement par l'hôte…"
+          : "Connexion internet perdue… reconnexion automatique en cours.";
       }
-      if (gameState) diffuser({ t: "etat", state: gameState });
-      else diffuserLobby();
-    }
-  });
-  window.addEventListener("pageshow", (ev) => {
-    if (!ev.persisted) return; // page restaurée depuis le bfcache : même traitement
-    if (contexte.role === "invite" && codeSalonRejoint) demanderResync();
-  });
+    });
+  }
 
   function reinitialiser() {
     contexte.role = null;
     contexte.moiId = null;
     contexte.joueursLocaux = [];
     gameState = null;
-    if (peer) { try { peer.destroy(); } catch (e) {} peer = null; }
-    hostConns = {};
-    clientConn = null;
+    detacherEcouteurs();
+    if (codeSalon && db) {
+      // On était l'hôte : on nettoie le salon pour ne rien laisser traîner.
+      try { db.ref("salons/" + codeSalon).remove(); } catch (e) {}
+    }
+    refSalon = null;
     codeSalon = null;
     codeSalonRejoint = null;
     nomInvite = null;
     monJoueurId = null;
-    arreterBattementCoeur();
-    arreterVeilleInvite();
   }
 
   // ------------------------------------------------------------
@@ -207,10 +213,6 @@
         ? "Ajoute-toi en premier, puis attends que les autres rejoignent avec le code."
         : "Ajoute chaque joueur avec son prénom et son paquet de réactions.";
 
-    if (role === "hote") {
-      initialiserHote();
-    }
-
     afficherEcran("ecran-config");
   }
 
@@ -228,7 +230,7 @@
     redessinerListeJoueurs();
 
     if (contexte.role === "hote" && contexte.joueursLocaux.length === 1) {
-      // L'hôte vient de s'ajouter : on ouvre le salon réseau
+      // L'hôte vient de s'ajouter : on ouvre le salon en ligne
       ouvrirSalonReseau();
     }
   }
@@ -280,33 +282,12 @@
       demarrerMancheEtTransferer();
     } else if (contexte.role === "hote") {
       contexte.moiId = contexte.joueursLocaux[0].id;
-      diffuser({ t: "debut", state: gameState });
       Engine.demarrerManche(gameState);
-      diffuser({ t: "etat", state: gameState });
+      if (refSalon) refSalon.child("demarree").set(true);
+      diffuser();
       afficherEcran("ecran-jeu");
       actualiserEcranJeu();
-      demarrerBattementCoeur();
     }
-  }
-
-  // ------------------------------------------------------------
-  // Battement de cœur hôte : rediffuse l'état régulièrement pour
-  // rattraper un message perdu en route (réseau instable / TURN).
-  // ------------------------------------------------------------
-  let battementCoeurId = null;
-  function demarrerBattementCoeur() {
-    if (battementCoeurId) return;
-    battementCoeurId = setInterval(() => {
-      if (contexte.role !== "hote") { arreterBattementCoeur(); return; }
-      if (gameState) {
-        diffuser({ t: "etat", state: gameState });
-      } else {
-        diffuserLobby();
-      }
-    }, 4000);
-  }
-  function arreterBattementCoeur() {
-    if (battementCoeurId) { clearInterval(battementCoeurId); battementCoeurId = null; }
   }
 
   // ------------------------------------------------------------
@@ -320,111 +301,75 @@
   }
 
   function ouvrirSalonReseau() {
+    if (!db) {
+      $("#statut-salon").textContent = "Connexion en ligne indisponible (configuration manquante).";
+      return;
+    }
     codeSalon = genererCode();
+    monJoueurId = contexte.joueursLocaux[0].id;
     $("#affichage-code").textContent = codeSalon;
     $("#statut-salon").textContent = "Ouverture du salon…";
-    try {
-      peer = new Peer(`boom-${codeSalon}`, { config: CONFIG_ICE });
-    } catch (e) {
-      $("#statut-salon").textContent = "Impossible de créer le salon en ligne (connexion indisponible).";
-      return;
-    }
-    peer.on("open", () => {
-      $("#statut-salon").textContent = "✅ Salon prêt — donne ce code aux autres joueurs.";
-      $("#erreur-config").textContent = "";
-      demarrerBattementCoeur();
-    });
-    peer.on("error", (err) => {
-      console.error("Erreur PeerJS", err);
-      if (err.type === "unavailable-id") {
-        // Code déjà pris (rare) : on retente avec un nouveau code
-        ouvrirSalonReseau();
-      } else {
-        $("#statut-salon").textContent = "Connexion en ligne instable. Réessaie si un joueur n'arrive pas à rejoindre.";
-      }
-    });
-    peer.on("disconnected", () => {
-      $("#statut-salon").textContent = "Connexion perdue avec le serveur de salon, tentative de reconnexion…";
-      try { peer.reconnect(); } catch (e) {}
-    });
-    peer.on("connection", (conn) => {
-      conn.on("open", () => {
-        conn.on("data", (msg) => receptionHote(conn, msg));
-        conn.on("close", () => {
-          const cle = conn.joueurId || conn.peer;
-          // Une connexion remplacée (reconnexion réussie) ne doit pas
-          // effacer la nouvelle connexion active du même joueur.
-          if (hostConns[cle] === conn) delete hostConns[cle];
-        });
+
+    refSalon = db.ref("salons/" + codeSalon);
+    refSalon
+      .set({ cree: firebase.database.ServerValue.TIMESTAMP, lobby: { joueurs: [] }, demarree: false })
+      .then(() => {
+        $("#statut-salon").textContent = "✅ Salon prêt — donne ce code aux autres joueurs.";
+        $("#erreur-config").textContent = "";
+      })
+      .catch((e) => {
+        console.error("Erreur Firebase (création du salon)", e);
+        $("#statut-salon").textContent = "Impossible de créer le salon (vérifie ta connexion internet).";
       });
-    });
-  }
 
-  function initialiserHote() {
-    // rien à faire tant que l'hôte n'a pas ajouté son propre prénom
-  }
-
-  function receptionHote(conn, msg) {
-    if (!msg || !msg.t) return;
-
-    // Identité persistante du joueur, indépendante de l'id réseau PeerJS
-    // (qui change à chaque reconnexion si le téléphone doit tout
-    // reconstruire) : le client l'envoie lui-même et la réutilise.
-    if (msg.t === "inscription") {
-      const nom = String(msg.nom || "Invité").slice(0, 20);
-      const pack = msg.pack === "M" || msg.pack === "B" ? msg.pack : "M";
-      const joueurId = (msg.joueurId && String(msg.joueurId).slice(0, 40)) || conn.peer;
-      conn.joueurId = joueurId;
-      hostConns[joueurId] = conn;
-
-      if (!gameState) {
-        // Partie pas encore démarrée : on ajoute au lobby
-        contexte.joueursLocaux.push({ id: joueurId, nom, pack, distant: true });
+    // Un invité écrit sa propre inscription ; on l'ajoute au lobby local
+    // dès qu'elle apparaît (une reconnexion réécrit la même entrée, donc
+    // pas de doublon possible).
+    ecouter(refSalon.child("inscriptions"), "value", (snap) => {
+      if (gameState) return; // partie déjà lancée : plus de nouvelles entrées
+      const inscriptions = snap.val() || {};
+      let changement = false;
+      Object.keys(inscriptions).forEach((joueurId) => {
+        if (contexte.joueursLocaux.some((j) => j.id === joueurId)) return;
+        const info = inscriptions[joueurId] || {};
+        contexte.joueursLocaux.push({
+          id: joueurId,
+          nom: String(info.nom || "Invité").slice(0, 20),
+          pack: info.pack === "B" ? "B" : "M",
+          distant: true,
+        });
+        changement = true;
+      });
+      if (changement) {
         redessinerListeJoueurs();
-        conn.send({ t: "bienvenue", joueurId });
-        diffuserLobby();
-      } else {
-        conn.send({ t: "erreur", message: "La partie a déjà commencé." });
-      }
-      return;
-    }
-
-    if (msg.t === "resync") {
-      // Un client redemande l'état courant (message précédent perdu, ou
-      // reconnexion complète après une connexion morte) — on le
-      // rattache à son identité de joueur d'origine.
-      const joueurId = (msg.joueurId && String(msg.joueurId).slice(0, 40)) || conn.peer;
-      conn.joueurId = joueurId;
-      hostConns[joueurId] = conn;
-      if (gameState) {
-        conn.send({ t: "etat", state: gameState });
-      } else {
-        conn.send({ t: "bienvenue", joueurId });
         diffuserLobby();
       }
-      return;
-    }
+    });
 
-    if (msg.t === "action" && gameState) {
+    // Actions envoyées par les invités pendant la partie.
+    ecouter(refSalon.child("actions"), "child_added", (snap) => {
+      const msg = snap.val();
+      snap.ref.remove().catch(() => {});
+      if (!msg || !gameState) return;
       try {
-        appliquerAction(msg.type, msg.payload || {}, conn.joueurId || conn.peer);
-        diffuser({ t: "etat", state: gameState });
+        appliquerAction(msg.type, msg.payload || {}, msg.joueurId);
+        diffuser();
         apresMiseAJourEtat();
       } catch (e) {
-        conn.send({ t: "erreur", message: e.message });
+        console.error("Action invalide reçue de " + msg.joueurId, e);
       }
-    }
+    });
   }
 
   function diffuserLobby() {
+    if (!refSalon) return;
     const liste = contexte.joueursLocaux.map((j) => ({ nom: j.nom, pack: j.pack }));
-    Object.values(hostConns).forEach((c) => c.send({ t: "lobby", joueurs: liste }));
+    refSalon.child("lobby").set({ joueurs: liste }).catch((e) => console.error("Échec d'envoi du lobby", e));
   }
 
-  function diffuser(msg) {
-    Object.values(hostConns).forEach((c) => {
-      try { c.send(msg); } catch (e) { console.error("Échec d'envoi à", c.peer, e); }
-    });
+  function diffuser() {
+    if (!refSalon) return;
+    refSalon.child("etat").set(gameState).catch((e) => console.error("Échec d'envoi de l'état", e));
   }
 
   // ------------------------------------------------------------
@@ -436,208 +381,102 @@
     $("#erreur-rejoindre").textContent = "";
     if (code.length !== 4) { $("#erreur-rejoindre").textContent = "Le code fait 4 lettres."; return; }
     if (!nom) { $("#erreur-rejoindre").textContent = "Donne ton prénom."; return; }
+    if (!db) { $("#erreur-rejoindre").textContent = "Connexion en ligne indisponible (configuration manquante)."; return; }
 
     contexte.role = "invite";
     codeSalonRejoint = code;
     nomInvite = nom;
     if (!monJoueurId) monJoueurId = genererIdJoueur();
+    contexte.moiId = monJoueurId;
     $("#erreur-rejoindre").textContent = "Connexion au salon…";
-    try {
-      peer = new Peer(undefined, { config: CONFIG_ICE });
-    } catch (e) {
-      $("#erreur-rejoindre").textContent = "Connexion en ligne indisponible.";
-      return;
-    }
 
-    let rejoint = false;
-    const delaiEchec = setTimeout(() => {
-      if (!rejoint) {
-        $("#erreur-rejoindre").textContent =
-          "La connexion prend trop de temps. Vérifie le code, ou que l'hôte a bien affiché « Salon prêt ».";
-      }
-    }, 12000);
-
-    peer.on("open", () => {
-      ouvrirConnexionInvite(code, () => {
-        rejoint = true;
-        clearTimeout(delaiEchec);
-      }, (err) => {
-        console.error("Erreur de connexion PeerJS", err);
-        $("#erreur-rejoindre").textContent = "Salon introuvable. Vérifie le code.";
+    const cible = db.ref("salons/" + code);
+    cible
+      .get()
+      .then((snap) => {
+        if (!snap.exists()) {
+          $("#erreur-rejoindre").textContent = "Salon introuvable. Vérifie le code.";
+          return;
+        }
+        refSalon = cible;
+        return refSalon.child("inscriptions/" + monJoueurId).set({ nom: nomInvite, pack: "M" });
+      })
+      .then(() => {
+        if (!refSalon) return; // le salon n'existait pas, déjà signalé plus haut
+        afficherEcran("ecran-attente");
+        $("#statut-connexion").textContent = "Connecté ! En attente du lancement par l'hôte…";
+        ecouterSalonInvite();
+      })
+      .catch((e) => {
+        console.error("Erreur Firebase (rejoindre le salon)", e);
+        $("#erreur-rejoindre").textContent = "Connexion en ligne indisponible. Vérifie ta connexion internet.";
       });
-      clientConn.on("close", () => {
-        if (!rejoint) $("#erreur-rejoindre").textContent = "Connexion coupée avant d'avoir rejoint. Réessaie.";
-      });
-    });
-    peer.on("error", (err) => {
-      console.error("Erreur PeerJS", err);
-      $("#erreur-rejoindre").textContent = "Salon introuvable. Vérifie le code.";
-    });
-    peer.on("disconnected", () => {
-      // Signal perdu avec le serveur PeerJS (fréquent après une mise en
-      // veille) : si on avait déjà rejoint la partie, on resynchronise.
-      if (contexte.moiId) demanderResync();
-    });
   }
 
-  // Identifiant de joueur permanent côté invité : généré une seule fois et
-  // réutilisé à chaque reconnexion, même si le canal réseau PeerJS doit
-  // être entièrement reconstruit (id réseau différent à chaque fois).
-  // C'est ce qui permet à l'hôte de reconnaître le même joueur (score,
-  // rôle de Cible…) après une coupure complète.
-  let monJoueurId = null;
-  function genererIdJoueur() {
-    return "j" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
-  }
-
-  // Ouvre (ou rouvre) le canal de données vers l'hôte sur le peer courant.
-  function ouvrirConnexionInvite(code, surOuverture, surErreur) {
-    clientConn = peer.connect(`boom-${code}`, { reliable: true });
-    clientConn.on("open", () => {
-      dernierMessageRecu = Date.now();
-      if (contexte.moiId) {
-        // Reconnexion : l'hôte connaît déjà ce joueur, on redemande l'état.
-        clientConn.send({ t: "resync", joueurId: monJoueurId });
-      } else {
-        clientConn.send({ t: "inscription", nom: nomInvite, pack: "M", joueurId: monJoueurId });
-      }
-      demarrerVeilleInvite();
-      if (surOuverture) surOuverture();
-    });
-    clientConn.on("data", (msg) => { dernierMessageRecu = Date.now(); receptionInvite(msg); });
-    clientConn.on("error", (err) => { if (surErreur) surErreur(err); });
-    clientConn.on("close", () => {
-      if (contexte.moiId && gameState && !gameState.terminee) {
-        $("#statut-connexion").textContent = "Connexion coupée. Appuie sur « Réessayer ».";
-      }
-    });
-  }
-
-  function receptionInvite(msg) {
-    if (!msg || !msg.t) return;
-    if (msg.t === "bienvenue") {
-      contexte.moiId = msg.joueurId;
-      afficherEcran("ecran-attente");
-      $("#statut-connexion").textContent = "Connecté ! En attente du lancement par l'hôte…";
-    } else if (msg.t === "lobby") {
+  function ecouterSalonInvite() {
+    ecouter(refSalon.child("lobby"), "value", (snap) => {
+      if (gameState) return; // la partie est lancée, le lobby ne sert plus
+      const val = snap.val();
+      if (!val) return;
       const zone = $("#liste-joueurs-attente");
       zone.innerHTML = "";
-      msg.joueurs.forEach((j) => {
+      (val.joueurs || []).forEach((j) => {
         const ligne = document.createElement("div");
         ligne.className = "ligne-joueur";
         ligne.innerHTML = `<span>${j.nom}</span><span class="pack-tag ${j.pack}">${j.pack}</span>`;
         zone.appendChild(ligne);
       });
-    } else if (msg.t === "debut") {
-      gameState = msg.state;
-    } else if (msg.t === "etat") {
-      gameState = msg.state;
+    });
+
+    ecouter(refSalon.child("etat"), "value", (snap) => {
+      const val = snap.val();
+      if (!val) return;
+      gameState = val;
       if (gameState.terminee) {
-        apresMiseAJourEtat();
+        const ecranActif = document.querySelector(".ecran.actif");
+        if (ecranActif && ecranActif.id === "ecran-fin") {
+          apresMiseAJourEtat();
+        } else {
+          afficherFin();
+        }
       } else {
         afficherEcran("ecran-jeu");
         actualiserEcranJeu();
       }
-    } else if (msg.t === "fin") {
-      gameState = msg.state || gameState;
-      afficherFin();
-    } else if (msg.t === "erreur") {
-      $("#statut-connexion").textContent = msg.message;
-    }
+    });
   }
 
   function envoyerActionInvite(type, payload) {
-    if (clientConn) clientConn.send({ t: "action", type, payload });
+    if (!refSalon) return;
+    refSalon
+      .child("actions")
+      .push({ type, payload: payload || {}, joueurId: monJoueurId, ts: firebase.database.ServerValue.TIMESTAMP })
+      .catch((e) => console.error("Échec d'envoi de l'action", e));
   }
 
-  // Veille invité : si plus aucun message n'arrive de l'hôte pendant un
-  // moment (téléphone mis en veille, coupure réseau discrète…), on tente
-  // une resynchronisation automatique, sans attendre que le joueur
-  // s'aperçoive qu'il est bloqué et appuie lui-même sur « Réessayer ».
-  let veilleInviteId = null;
-  function demarrerVeilleInvite() {
-    if (veilleInviteId) return;
-    veilleInviteId = setInterval(() => {
-      if (contexte.role !== "invite") { arreterVeilleInvite(); return; }
-      if (Date.now() - dernierMessageRecu > 9000) {
-        demanderResync();
-      }
-    }, 5000);
-  }
-  function arreterVeilleInvite() {
-    if (veilleInviteId) { clearInterval(veilleInviteId); veilleInviteId = null; }
-  }
-
-  // Demande de resynchronisation manuelle ("Réessayer") ou automatique
-  // (veille). On tente d'abord un simple message sur la connexion
-  // actuelle (cas d'un message isolé perdu) ; si rien ne revient en
-  // quelques secondes, on considère que le canal réseau est mort pour de
-  // bon (téléphone mis en veille, changement de réseau…) et on repart
-  // d'un tout nouveau peer PeerJS, exactement comme au premier
-  // branchement — plus fiable que de tenter de ressusciter l'ancien.
-  // L'identifiant persistant monJoueurId permet à l'hôte de reconnaître
-  // le même joueur malgré ce nouvel id réseau.
-  let resyncEnCours = false;
-  function demanderResync() {
-    if (resyncEnCours) return;
-    resyncEnCours = true;
-    $("#statut-connexion").textContent = "Resynchronisation…";
-    const avant = dernierMessageRecu;
-
-    if (clientConn && clientConn.open) {
-      try { clientConn.send({ t: "resync", joueurId: monJoueurId }); } catch (e) {}
-    }
-
-    setTimeout(() => {
-      if (dernierMessageRecu !== avant) {
-        // Une réponse est arrivée entre-temps, tout est rentré dans l'ordre.
-        resyncEnCours = false;
-        return;
-      }
-      // Toujours rien : reconnexion complète avec un peer flambant neuf.
-      $("#statut-connexion").textContent = "Reconnexion en cours…";
-      try { if (clientConn) clientConn.close(); } catch (e) {}
-      try { if (peer) peer.destroy(); } catch (e) {}
-      peer = null;
-      clientConn = null;
-
-      let ouvert = false;
-      const echecTimeout = setTimeout(() => {
-        if (!ouvert) {
-          resyncEnCours = false;
-          $("#statut-connexion").textContent = "Toujours pas de réseau. Réessaie dans quelques secondes.";
+  // Bouton « Réessayer » de la salle d'attente : Firebase se
+  // resynchronise déjà tout seul (les écouteurs .on("value") reçoivent
+  // automatiquement la dernière valeur dès que la connexion revient),
+  // donc ce bouton sert surtout de filet de sécurité visuel.
+  function forcerRafraichissementInvite() {
+    if (!refSalon) return;
+    $("#statut-connexion").textContent = "Vérification…";
+    refSalon
+      .child("etat")
+      .get()
+      .then((snap) => {
+        const val = snap.val();
+        if (val) {
+          gameState = val;
+          if (gameState.terminee) afficherFin();
+          else { afficherEcran("ecran-jeu"); actualiserEcranJeu(); }
+        } else {
+          $("#statut-connexion").textContent = "En attente du lancement par l'hôte…";
         }
-      }, 10000);
-
-      let nouveauPeer;
-      try {
-        nouveauPeer = new Peer(undefined, { config: CONFIG_ICE });
-      } catch (e) {
-        clearTimeout(echecTimeout);
-        resyncEnCours = false;
-        $("#statut-connexion").textContent = "Connexion en ligne indisponible.";
-        return;
-      }
-      peer = nouveauPeer;
-      peer.on("open", () => {
-        ouvrirConnexionInvite(codeSalonRejoint, () => {
-          ouvert = true;
-          clearTimeout(echecTimeout);
-          resyncEnCours = false;
-          $("#statut-connexion").textContent = "Reconnecté !";
-        }, () => {
-          resyncEnCours = false;
-          clearTimeout(echecTimeout);
-          $("#statut-connexion").textContent = "Toujours pas de connexion. Réessaie dans un instant.";
-        });
+      })
+      .catch(() => {
+        $("#statut-connexion").textContent = "Toujours hors-ligne. Vérifie ta connexion internet.";
       });
-      peer.on("error", (err) => {
-        console.error("Erreur PeerJS (reconnexion)", err);
-        resyncEnCours = false;
-        clearTimeout(echecTimeout);
-        $("#statut-connexion").textContent = "Toujours pas de connexion. Réessaie dans un instant.";
-      });
-    }, 3500);
   }
 
   // ------------------------------------------------------------
@@ -689,7 +528,7 @@
       return;
     }
     appliquerAction(type, payload, contexte.moiId);
-    if (contexte.role === "hote") diffuser({ t: "etat", state: gameState });
+    if (contexte.role === "hote") diffuser();
     if (contexte.role === "local") {
       local_avancer();
     } else {
@@ -706,7 +545,7 @@
       return;
     }
     Engine.validerDefi(gameState, defiId, reussi);
-    if (contexte.role === "hote") diffuser({ t: "etat", state: gameState });
+    if (contexte.role === "hote") diffuser();
     apresMiseAJourEtat();
   }
 
@@ -1068,8 +907,8 @@
           demarrerMancheEtTransferer();
         } else {
           const m2 = Engine.demarrerManche(gameState);
-          if (!m2) { diffuser({ t: "fin", state: gameState }); afficherFin(); return; }
-          diffuser({ t: "etat", state: gameState });
+          diffuser();
+          if (!m2) { afficherFin(); return; }
           actualiserEcranJeu();
         }
       });

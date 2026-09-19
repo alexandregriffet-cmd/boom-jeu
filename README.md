@@ -3,21 +3,39 @@
 Jeu de soirée à deux ou plus : situations, paris sur les réactions, cartes
 Véto, carte Joker, et un gage pour le·la dernier·ère à la fin.
 
-C'est une application web statique (HTML/CSS/JS, sans backend). Elle
-fonctionne dans un navigateur de smartphone et peut être hébergée
-gratuitement sur GitHub Pages.
+C'est une application web statique (HTML/CSS/JS) hébergée gratuitement sur
+GitHub Pages. Le mode « salon en ligne » s'appuie sur Firebase Realtime
+Database (gratuit) comme serveur central de synchronisation — voir plus bas.
 
 ## Mettre le jeu en ligne sur GitHub Pages
 
 1. Crée un nouveau dépôt sur GitHub (public ou privé, peu importe).
 2. Dépose-y le contenu de ce dossier (`index.html`, `style.css`, `app.js`,
-   `engine.js`, `cartes.js`, `peerjs.min.js`) à la racine du dépôt.
+   `engine.js`, `cartes.js`, `firebase-config.js`) à la racine du dépôt.
 3. Dans le dépôt : **Settings → Pages**, choisis la branche `main` et le
    dossier `/ (root)`, puis enregistre.
 4. Au bout d'une à deux minutes, GitHub affiche l'adresse du site, du type
    `https://<ton-nom>.github.io/<nom-du-depot>/`. C'est le lien à partager.
 
 Aucune étape de build n'est nécessaire : ce sont des fichiers statiques.
+
+## Configurer Firebase (obligatoire pour le salon en ligne)
+
+Le mode « Un seul téléphone » fonctionne sans rien configurer. Pour que
+« Créer un salon en ligne » / « Rejoindre un salon » fonctionnent entre
+plusieurs téléphones, il faut un projet Firebase gratuit (5-10 minutes,
+une seule fois) : toutes les instructions détaillées sont dans les
+commentaires en haut de `firebase-config.js`. En résumé :
+
+1. Crée un projet gratuit sur https://console.firebase.google.com/
+2. Active « Realtime Database » (mode test), et publie les règles
+   d'accès données dans `firebase-config.js`.
+3. Récupère la configuration de l'application web du projet et colle-la
+   dans `firebase-config.js` à la place des valeurs `TON_...`.
+4. Redéploie (remplace `firebase-config.js` dans ton dépôt GitHub).
+
+Tant que `firebase-config.js` garde ses valeurs par défaut, le jeu affiche
+un message clair (« configuration manquante ») au lieu de planter.
 
 ## Les deux façons de jouer
 
@@ -26,14 +44,18 @@ Aucune étape de build n'est nécessaire : ce sont des fichiers statiques.
   autres.
 - **Salon en ligne** : un·e joueur·euse crée un salon et obtient un code à
   4 lettres ; les autres le rejoignent depuis leur propre téléphone en
-  entrant ce code. La connexion entre les téléphones passe par PeerJS
-  (connexion directe entre navigateurs) : elle a besoin d'Internet pour
-  s'établir, mais aucune donnée de partie ne transite par un serveur tiers.
+  entrant ce code. Tous les téléphones synchronisent la partie via
+  Firebase (un serveur central), pas entre eux directement : c'est ce qui
+  rend la connexion fiable quel que soit le réseau de chacun (4G, box,
+  opérateurs différents), contrairement à une connexion directe
+  téléphone-à-téléphone qui échoue souvent selon les NAT/pare-feux
+  mobiles.
 
-  ⚠️ Ce mode fait confiance aux joueurs : les échanges réseau ne sont pas
-  chiffrés de bout en bout contre un joueur techniquement curieux qui
-  inspecterait son propre appareil. Pour une soirée entre amis, c'est
-  largement suffisant.
+  ⚠️ Ce mode fait confiance aux joueurs : les règles Firebase données
+  ci-dessus ouvrent la lecture/écriture du nœud "salons" à qui connaît
+  l'URL de la base ; combiné à un code de salon à 4 lettres tiré au sort
+  et à des parties éphémères, c'est largement suffisant pour une soirée
+  entre amis, mais ce n'est pas un chiffrement de bout en bout.
 
 ## Contenu du jeu
 
@@ -80,8 +102,9 @@ générer des lots supplémentaires (100, 200 cartes de plus) sur demande.
 
 ## Limites connues (pour une V1)
 
-- Le mode en ligne ne gère pas la reconnexion si un joueur perd sa
-  connexion en cours de partie.
 - Pas de mode "spectateur" ni de sauvegarde de partie entre deux sessions.
 - Le contenu Brûlant reste suggéré, jamais explicite (choix assumé, voir
   la conversation d'origine).
+- Les règles Firebase proposées ci-dessus sont volontairement simples
+  (pas d'authentification) — largement suffisant pour un jeu entre amis,
+  mais à ne pas réutiliser telles quelles pour une appli grand public.
