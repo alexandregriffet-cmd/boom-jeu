@@ -254,7 +254,7 @@ const CARTES_BRUTES = [
   c("brulant", "Utiliser de la cire de bougie tiède (spéciale massage/BDSM) sur la peau ou les zones érogènes", true),
   c("brulant", "Porter un collier ou une laisse pendant les préliminaires ou l'acte", true),
   c("brulant", "Pratiquer la privation sensorielle totale (yeux bandés + casque antibruit) pendant que l'autre agit", true),
-  c("brulant", "Se faire insulter gentiment ou utiliser du "dirty talk" (mots crus et vulgaires) pour monter en tension", true),
+  c("brulant", "Se faire insulter gentiment ou utiliser du (mots crus et vulgaires) pour monter en tension", true),
   c("brulant", "Lécher ou embrasser les pieds de son/sa partenaire par fétichisme", true),
   c("brulant", "Utiliser une pince à seins ou des stimulants de tétons pendant l'acte"),
   c("brulant", "Donner des ordres stricts à son partenaire qui doit obéir au doigt et à l'œil sous peine de punition"),
