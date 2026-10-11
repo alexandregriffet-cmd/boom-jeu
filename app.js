@@ -18,7 +18,7 @@
   // Numéro de build affiché en bas de l'écran d'accueil — sert à vérifier
   // qu'un téléphone a bien reçu la dernière version déployée (et pas une
   // copie mise en cache par le navigateur).
-  const VERSION_APP = "2026-10-11-9";
+  const VERSION_APP = "2026-10-11-10";
 
   // Un joueur sur téléphone n'a pas accès à la console développeur : sans
   // ça, une erreur JavaScript est invisible et donne l'impression que "rien
@@ -126,10 +126,19 @@
   //
   // Pour que plusieurs onglets puissent chacun héberger/rejoindre un
   // salon différent sans se marcher dessus, on ne stocke pas UNE session
-  // mais un dictionnaire { code: session }, et chaque onglet retrouve la
-  // sienne via le code inscrit dans sa propre URL (?salon=CODE) plutôt que
-  // via "la dernière session enregistrée" — qui pourrait appartenir à un
-  // autre onglet.
+  // mais un dictionnaire { "role:code": session }, et chaque onglet
+  // retrouve la sienne via le code ET le rôle inscrits dans sa propre URL
+  // (?salon=CODE&role=hote|invite) plutôt que via "la dernière session
+  // enregistrée" — qui pourrait appartenir à un autre onglet.
+  //
+  // Le rôle fait partie de la clé (pas seulement le code) parce que
+  // l'hôte et son invité, pour UN MÊME salon, partagent le même code —
+  // s'ils testent depuis le même navigateur (deux onglets), une clé basée
+  // sur le seul code ferait que la session de l'un écrase celle de
+  // l'autre, et une reconnexion après mise en veille pourrait alors faire
+  // croire à l'onglet hôte qu'il est l'invité (ou l'inverse), plus personne
+  // n'écoutant alors les actions du salon : partie bloquée pour tout le
+  // monde.
   // ------------------------------------------------------------
   const CLE_SESSIONS = "boom_sessions_v2";
   const DUREE_MAX_SESSION = 24 * 60 * 60 * 1000; // 24h : au-delà, on oublie
@@ -145,9 +154,13 @@
   function ecrireToutesLesSessions(sessions) {
     try { localStorage.setItem(CLE_SESSIONS, JSON.stringify(sessions)); } catch (e) {}
   }
+  function cleSession(code, role) {
+    return role + ":" + code;
+  }
 
   function sauvegarderSession(code, donnees) {
-    if (!code) return;
+    if (!code || !donnees || !donnees.role) return;
+    const cle = cleSession(code, donnees.role);
     const sessions = chargerToutesLesSessions();
     const maintenant = Date.now();
     // On en profite pour oublier les sessions trop vieilles plutôt que de
@@ -155,30 +168,33 @@
     Object.keys(sessions).forEach((c) => {
       if (!sessions[c] || maintenant - (sessions[c].ts || 0) > DUREE_MAX_SESSION) delete sessions[c];
     });
-    sessions[code] = { ...donnees, ts: maintenant };
+    sessions[cle] = { ...donnees, ts: maintenant };
     ecrireToutesLesSessions(sessions);
-    fixerCodeDansUrl(code);
+    fixerCodeDansUrl(code, donnees.role);
   }
-  function chargerSession(code) {
-    if (!code) return null;
+  function chargerSession(code, role) {
+    if (!code || !role) return null;
     const sessions = chargerToutesLesSessions();
-    return sessions[code] || null;
+    return sessions[cleSession(code, role)] || null;
   }
-  function effacerSession(code) {
-    if (code) {
+  function effacerSession(code, role) {
+    if (code && role) {
+      const cle = cleSession(code, role);
       const sessions = chargerToutesLesSessions();
-      if (sessions[code]) { delete sessions[code]; ecrireToutesLesSessions(sessions); }
+      if (sessions[cle]) { delete sessions[cle]; ecrireToutesLesSessions(sessions); }
     }
     effacerCodeDeUrl();
   }
 
-  // Lie cet onglet à un salon précis via l'URL (?salon=CODE), sans
-  // recharger la page — c'est ce qui permet de distinguer "mon" salon de
-  // celui d'un autre onglet au moment de se reconnecter après rechargement.
-  function fixerCodeDansUrl(code) {
+  // Lie cet onglet à un salon précis (et à son rôle dedans) via l'URL
+  // (?salon=CODE&role=hote|invite), sans recharger la page — c'est ce qui
+  // permet de distinguer "mon" salon (et mon rôle dedans) de celui d'un
+  // autre onglet au moment de se reconnecter après rechargement.
+  function fixerCodeDansUrl(code, role) {
     try {
       const url = new URL(window.location.href);
       url.searchParams.set("salon", code);
+      url.searchParams.set("role", role);
       window.history.replaceState(null, "", url);
     } catch (e) {}
   }
@@ -186,12 +202,20 @@
     try {
       const url = new URL(window.location.href);
       url.searchParams.delete("salon");
+      url.searchParams.delete("role");
       window.history.replaceState(null, "", url);
     } catch (e) {}
   }
   function lireCodeDepuisUrl() {
     try {
       return new URL(window.location.href).searchParams.get("salon");
+    } catch (e) {
+      return null;
+    }
+  }
+  function lireRoleDepuisUrl() {
+    try {
+      return new URL(window.location.href).searchParams.get("role");
     } catch (e) {
       return null;
     }
@@ -286,6 +310,7 @@
 
   function reinitialiser() {
     const codeActuel = codeSalon || codeSalonRejoint;
+    const roleActuel = codeSalon ? "hote" : codeSalonRejoint ? "invite" : null;
     contexte.role = null;
     contexte.moiId = null;
     contexte.joueursLocaux = [];
@@ -300,7 +325,7 @@
     codeSalonRejoint = null;
     nomInvite = null;
     monJoueurId = null;
-    effacerSession(codeActuel);
+    effacerSession(codeActuel, roleActuel);
   }
 
   // ------------------------------------------------------------
@@ -1203,7 +1228,7 @@
     refSalon
       .get()
       .then((snap) => {
-        if (!snap.exists()) { effacerSession(code); return; } // salon fermé entre-temps
+        if (!snap.exists()) { effacerSession(code, "hote"); return; } // salon fermé entre-temps
         const val = snap.val() || {};
         contexte.role = "hote";
         contexte.moiId = monJoueurId;
@@ -1255,7 +1280,7 @@
     cible
       .get()
       .then((snap) => {
-        if (!snap.exists()) { effacerSession(code); return; } // salon fermé entre-temps
+        if (!snap.exists()) { effacerSession(code, "invite"); return; } // salon fermé entre-temps
         refSalon = cible;
         contexte.role = "invite";
         contexte.moiId = monJoueurId;
@@ -1270,15 +1295,16 @@
   function tenterRepriseSession() {
     if (!db) return;
     const code = lireCodeDepuisUrl();
-    if (!code) return;
-    const session = chargerSession(code);
+    const role = lireRoleDepuisUrl();
+    if (!code || !role) return;
+    const session = chargerSession(code, role);
     if (!session || !session.role || !session.monJoueurId) return;
     if (session.role === "hote") {
       tenterReprendreHote(code, session);
     } else if (session.role === "invite") {
       tenterReprendreInvite(code, session);
     } else {
-      effacerSession(code);
+      effacerSession(code, role);
     }
   }
 
