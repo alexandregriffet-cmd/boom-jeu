@@ -267,6 +267,15 @@ h3 { font-size: 1rem; margin: 0 0 10px; color: var(--texte-att); text-transform:
 .btn-reaction:active { transform: scale(.96); }
 .btn-reaction.choisi { border-color: var(--vert); background: rgba(53,208,160,.18); }
 
+.grille-reponses-situation { display: flex; flex-direction: column; gap: 10px; margin-bottom: 14px; }
+.btn-reponse-situation {
+  padding: 16px; border-radius: 16px; border: 2px solid rgba(255,255,255,.12);
+  background: var(--carte); color: var(--texte); font-weight: 700; cursor: pointer; font-size: 1.02rem;
+  text-align: center;
+}
+.btn-reponse-situation:active { transform: scale(.97); }
+.reponse-situation-choisie { color: var(--accent-2); }
+
 .actions-secondaires { display: flex; gap: 10px; }
 .btn-veto, .btn-joker {
   flex: 1; padding: 12px; border-radius: 14px; border: none; font-weight: 700; cursor: pointer;

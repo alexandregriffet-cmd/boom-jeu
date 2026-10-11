@@ -16,6 +16,17 @@ const NIVEAUX = [
   { id: "defi",    nom: "Défi 🎯",      couleur: "#4FA8E0" },
 ];
 
+// Réponses possibles de la Cible sur une carte situation (ni Défi, ni
+// gage — celles-là restent validées "c'est fait" tout court). Pas de
+// pari, personne ne devine : la Cible dit juste la vérité.
+const REPONSES_SITUATION = [
+  { id: "deja-fait",   texte: "Déjà fait" },
+  { id: "trop-envie",  texte: "Trop envie de le faire" },
+  { id: "sais-pas",    texte: "Je ne sais pas si je voudrais" },
+  { id: "jamais-fait", texte: "Jamais fait" },
+  { id: "jamais-vie",  texte: "Jamais de la vie" },
+];
+
 // niveau, texte, avecQui, defi (validation manuelle fait/pas fait), libre (texte écrit par la Cible)
 function c(niveau, texte, avecQui = false, defi = false, libre = false) {
   return { niveau, texte, avecQui, defi, libre };
@@ -569,6 +580,7 @@ const BoomCartes = {
   NIVEAUX,
   CARTES,
   NIVEAUX_GAGES,
+  REPONSES_SITUATION,
 };
 
 if (typeof module !== "undefined" && module.exports) {

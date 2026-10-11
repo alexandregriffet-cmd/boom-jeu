@@ -18,7 +18,7 @@
   // Numéro de build affiché en bas de l'écran d'accueil — sert à vérifier
   // qu'un téléphone a bien reçu la dernière version déployée (et pas une
   // copie mise en cache par le navigateur).
-  const VERSION_APP = "2026-10-11-3";
+  const VERSION_APP = "2026-10-11-4";
 
   // Un joueur sur téléphone n'a pas accès à la console développeur : sans
   // ça, une erreur JavaScript est invisible et donne l'impression que "rien
@@ -47,7 +47,7 @@
     afficherBanniereErreur((raison && (raison.message || String(raison))) || "promesse rejetée");
   });
 
-  const { NIVEAUX } = window.BoomCartes || require("./cartes.js");
+  const { NIVEAUX, REPONSES_SITUATION } = window.BoomCartes || require("./cartes.js");
   const Engine = window.BoomEngine;
 
   // ------------------------------------------------------------
@@ -633,7 +633,7 @@
         Engine.validerDefi(gameState, payload.defiId, !!payload.reussi);
         break;
       case "valider-manche":
-        Engine.validerManche(gameState, payload.avecQuiReponse);
+        Engine.validerManche(gameState, payload.reponseId, payload.avecQuiReponse);
         break;
       case "manche-suivante":
         Engine.demarrerManche(gameState);
@@ -844,10 +844,36 @@
     zone.querySelector("[data-action-locale='veto']").addEventListener("click", () => envoyerAction("veto", {}));
   }
 
-  // Plus de pari ni de réaction secrète : la Cible répond ou agit devant
-  // le groupe, puis valide elle-même quand c'est fait pour passer à la
-  // carte suivante. Le Véto reste disponible pour passer la manche.
+  // Plus de pari ni de réaction secrète. Sur une carte Défi ou un gage,
+  // la Cible valide juste "c'est fait" (une vraie action à réaliser).
+  // Sur une carte situation classique, elle choisit une des 5 réponses
+  // honnêtes — personne ne devine, elle dit juste la vérité. Le Véto
+  // reste disponible dans les deux cas pour passer la manche.
   function rendreEnCours(zone, m, cible) {
+    const demandeReponse = !m.defi && !m.estGage;
+
+    if (demandeReponse) {
+      zone.innerHTML = `
+        <p class="texte-aide">${cible.nom}, ta réponse, sans filtre :</p>
+        <div class="grille-reponses-situation" id="grille-reponses-situation"></div>
+        <div class="actions-secondaires">
+          <button class="btn-veto" data-action-locale="veto" ${cible.vetosRestants <= 0 ? "disabled" : ""}>
+            🙅 Véto (${cible.vetosRestants})
+          </button>
+        </div>
+      `;
+      const grille = zone.querySelector("#grille-reponses-situation");
+      REPONSES_SITUATION.forEach((r) => {
+        const b = document.createElement("button");
+        b.className = "btn-reponse-situation";
+        b.textContent = r.texte;
+        b.addEventListener("click", () => envoyerAction("valider-manche", { reponseId: r.id }));
+        grille.appendChild(b);
+      });
+      zone.querySelector("[data-action-locale='veto']").addEventListener("click", () => envoyerAction("veto", {}));
+      return;
+    }
+
     zone.innerHTML = `
       <p class="texte-aide">${m.estGage ? `${cible.nom}, un gage est tombé pour toi !` : `${cible.nom}, à toi de répondre ou d'agir, sans filtre.`}</p>
       <button class="btn btn-principal" id="btn-valider-manche">✅ C'est fait, carte suivante</button>
@@ -868,10 +894,12 @@
       html = `<div class="resultat-calme"><h4>Manche passée 🙈</h4><p>${cible.nom} a utilisé une carte Véto.</p></div>`;
     } else {
       const texteAffiche = m.estGage ? m.gageTexte : m.carteTexte;
+      const reponse = m.reponseId ? REPONSES_SITUATION.find((r) => r.id === m.reponseId) : null;
       html = `
         <div class="resultat-calme">
-          <h4>${m.estGage ? "🎁 Gage réalisé" : "✅ C'est fait"}</h4>
+          <h4>${m.estGage ? "🎁 Gage réalisé" : reponse ? "💬 Sa réponse" : "✅ C'est fait"}</h4>
           <p>${cible.nom} : « ${texteAffiche} »</p>
+          ${reponse ? `<p class="reponse-situation-choisie">${cible.nom} répond : <strong>${reponse.texte}</strong></p>` : ""}
           ${m.avecQui ? `<div id="bloc-avec-qui"></div>` : ""}
         </div>`;
     }

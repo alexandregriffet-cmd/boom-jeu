@@ -24,7 +24,7 @@
     root.BoomEngine = factory(root.BoomCartes);
   }
 })(typeof self !== "undefined" ? self : this, function (data) {
-  const { CARTES, NIVEAUX_GAGES } = data;
+  const { CARTES, NIVEAUX_GAGES, REPONSES_SITUATION } = data;
 
   function melanger(tableau, rng) {
     const copie = tableau.slice();
@@ -175,13 +175,28 @@
   // La Cible a répondu/agi : on clôt la manche, sans aucun calcul de
   // points. Si la carte en demandait un, le champ "avec qui" peut être
   // précisé maintenant (ou plus tard via preciserAvecQui).
-  function validerManche(state, avecQuiReponse) {
+  //
+  // Sur une carte situation classique (ni Défi, ni gage), la Cible doit
+  // choisir une des 5 réponses honnêtes (reponseId) plutôt que de juste
+  // taper "c'est fait" : personne ne devine, elle dit juste la vérité.
+  // Les cartes Défi et les gages restent validées tout court.
+  function validerManche(state, reponseId, avecQuiReponse) {
     const m = state.manche;
     if (!m || m.phase !== "en_cours") throw new Error("Pas le moment de valider cette manche.");
+
+    const demandeReponse = !m.defi && !m.estGage;
+    let reponse = null;
+    if (demandeReponse) {
+      reponse = REPONSES_SITUATION.find((r) => r.id === reponseId);
+      if (!reponse) throw new Error("Choisis une réponse avant de valider.");
+    }
+
+    m.reponseId = reponse ? reponse.id : null;
     m.avecQuiReponse = m.avecQui ? (avecQuiReponse || "").trim() : null;
     m.phase = "terminee";
     m.resultat = {
       type: "fait",
+      reponseId: m.reponseId,
       avecQuiReponse: m.avecQuiReponse,
       defiEnAttente: false,
       defiId: null,
