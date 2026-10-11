@@ -247,13 +247,15 @@
     };
   }
 
-  // Permet à la Cible de préciser (ou corriger) qui elle visait, à
-  // n'importe quel moment après la fin de la manche.
+  // Permet à un AUTRE joueur (pas la Cible) de préciser (ou corriger)
+  // avec qui, à n'importe quel moment après la fin de la manche.
   function preciserAvecQui(state, joueurId, texte) {
     const m = state.manche;
     if (!m || m.phase !== "terminee") throw new Error("Pas le moment de préciser ça.");
     if (!m.avecQui) throw new Error("Cette carte ne demande pas de précision.");
-    if (joueurId !== m.cibleId) throw new Error("Seule la Cible peut préciser ça.");
+    // C'est l'un des AUTRES joueurs (pas la Cible qui vient d'agir) qui
+    // précise avec qui — la Cible ne se désigne pas elle-même de cible.
+    if (joueurId === m.cibleId) throw new Error("La Cible ne peut pas préciser ça elle-même — c'est à un autre joueur de le faire.");
     const t = (texte || "").trim().slice(0, 60);
     m.avecQuiReponse = t;
     if (m.resultat) m.resultat.avecQuiReponse = t;

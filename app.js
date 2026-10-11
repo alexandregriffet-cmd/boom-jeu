@@ -18,7 +18,7 @@
   // Numéro de build affiché en bas de l'écran d'accueil — sert à vérifier
   // qu'un téléphone a bien reçu la dernière version déployée (et pas une
   // copie mise en cache par le navigateur).
-  const VERSION_APP = "2026-10-11-5";
+  const VERSION_APP = "2026-10-11-6";
 
   // Un joueur sur téléphone n'a pas accès à la console développeur : sans
   // ça, une erreur JavaScript est invisible et donne l'impression que "rien
@@ -679,31 +679,59 @@
   // Précise (ou corrige) le "avec qui" une fois la manche révélée — utilise
   // le même schéma que validerDefiUI (pas envoyerAction) pour rester sur
   // l'écran de résultat sans relancer le passage de téléphone du mode local.
+  // C'est à un AUTRE joueur que la Cible de le faire (voir rendreBlocAvecQui).
   function preciserAvecQuiUI(texte) {
     if (contexte.role === "invite") {
       envoyerActionInvite("avec-qui", { texte });
       return;
     }
-    // En mode local, personne n'est "propriétaire" de l'appareil au moment
-    // de la révélation (le téléphone est posé au milieu du groupe) : on agit
-    // directement au nom de la Cible plutôt que de dépendre de contexte.moiId.
-    const idActeur = contexte.role === "local" ? gameState.manche.cibleId : contexte.moiId;
+    // En mode local, le téléphone est posé au milieu du groupe : n'importe
+    // quel joueur présent peut taper, du moment que ce n'est pas la Cible
+    // elle-même — on agit au nom du premier autre joueur de la partie,
+    // l'identité précise n'a pas d'importance pour le moteur.
+    let idActeur = contexte.moiId;
+    if (contexte.role === "local" || !idActeur || idActeur === gameState.manche.cibleId) {
+      const autre = gameState.joueurs.find((j) => j.id !== gameState.manche.cibleId);
+      idActeur = autre ? autre.id : contexte.moiId;
+    }
     Engine.preciserAvecQui(gameState, idActeur, texte);
     if (contexte.role === "hote") diffuser();
     apresMiseAJourEtat();
   }
 
-  // Affiche, dans la zone réservée du résultat, soit le champ éditable pour
-  // la Cible (elle peut préciser/corriger à tout moment après la révélation
-  // — plus besoin d'avoir rempli le champ avant de répondre), soit la
-  // réponse en lecture seule pour les autres joueurs.
+  // Affiche, dans la zone réservée du résultat, le champ éditable pour un
+  // AUTRE joueur que la Cible (c'est à lui/elle de préciser avec qui, pas à
+  // la Cible de se désigner elle-même qui elle visait). Verrouillé par
+  // défaut pour que ce soit un geste conscient — "je prends le téléphone
+  // pour préciser" — plutôt qu'immédiatement modifiable par la Cible.
+  let avecQuiDeverrouille = false;
+  let avecQuiDeverrouilleManche = null;
   function rendreBlocAvecQui(el, m, res) {
     if (!el) return;
-    const modifiable = contexte.role === "local" || contexte.moiId === m.cibleId;
-    if (!modifiable) {
-      el.innerHTML = `<p><em>Avec qui : ${echapper(res.avecQuiReponse) || "(pas encore précisé)"}</em></p>`;
+    // Un nouveau verrou à chaque manche : le déverrouillage d'un tour ne
+    // doit pas rester acquis pour les suivants.
+    if (avecQuiDeverrouilleManche !== m.numero) {
+      avecQuiDeverrouilleManche = m.numero;
+      avecQuiDeverrouille = false;
+    }
+    const jeSuisCible = contexte.role !== "local" && contexte.moiId === m.cibleId;
+
+    if (jeSuisCible) {
+      // La Cible ne peut pas préciser elle-même : lecture seule pour elle.
+      el.innerHTML = `<p><em>Avec qui : ${echapper(res.avecQuiReponse) || "(pas encore précisé par un autre joueur)"}</em></p>`;
       return;
     }
+
+    if (!avecQuiDeverrouille && !res.avecQuiReponse) {
+      el.innerHTML = `
+        <button class="btn btn-secondaire" id="btn-deverrouiller-avec-qui">✍️ Un autre joueur précise avec qui</button>`;
+      el.querySelector("#btn-deverrouiller-avec-qui").addEventListener("click", () => {
+        avecQuiDeverrouille = true;
+        rendreBlocAvecQui(el, m, res);
+      });
+      return;
+    }
+
     const valeurActuelle = echapper(res.avecQuiReponse || "");
     el.innerHTML = `
       <div class="reponse-avec-qui">
@@ -789,7 +817,7 @@
     zoneCarte.innerHTML = `
       <span class="etiquette-cible">${m.estGage ? "🎁 Gage pour" : "🎯 Cible :"} ${cible.nom}${m.defi ? " · Défi" : ""}</span>
       <p class="texte-situation">${texteAffiche}</p>
-      ${m.avecQui && !enAttenteTexteLibre ? `<span class="avec-qui">La Cible pourra préciser avec qui, une fois la manche terminée.</span>` : ""}
+      ${m.avecQui && !enAttenteTexteLibre ? `<span class="avec-qui">Un autre joueur pourra préciser avec qui, une fois la manche terminée.</span>` : ""}
     `;
 
     const zoneAction = $("#zone-action");
