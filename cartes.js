@@ -1,8 +1,11 @@
 /* ============================================================
-   BooM 💥 — Banque de situations
-   4 niveaux : doux, piquant, coquin, brulant
+   BooM 💥 — Banque de situations + gages
+   4 niveaux : doux, piquant, coquin, brulant, + défi
    Le jeton {cible} est remplacé par un prénom choisi par le joueur
    quand avecQui = true (le joueur désigne quelqu'un du groupe).
+   Les gages (NIVEAUX_GAGES) sortent parfois à la place d'une carte
+   (voir engine.js, probabiliteGage) ; il n'y a plus de système de
+   pari/points/Joker, juste la situation, le Véto et les gages.
    ============================================================ */
 
 const NIVEAUX = [
@@ -324,45 +327,11 @@ const CARTES = CARTES_BRUTES.map((carte, i) => ({
   ...carte,
 }));
 
-// ------------------------------------------------------------
-// Réactions des joueurs — 5 par genre, une lettre imposée
-// ------------------------------------------------------------
-const REACTIONS_M = [
-  { id: "m1", lettre: "M", texte: "Miam !", profil: "envie" },
-  { id: "m2", lettre: "M", texte: "Mille fois non !", profil: "refus" },
-  { id: "m3", lettre: "M", texte: "Ma foi… pourquoi pas ?", profil: "hesitation" },
-  { id: "m4", lettre: "M", texte: "Moi d'abord !", profil: "fonceuse" },
-  { id: "m5", lettre: "M", texte: "Mouillée d'avance 💦", profil: "coquin" },
-];
-
-const REACTIONS_B = [
-  { id: "b1", lettre: "B", texte: "Bueno !", profil: "envie" },
-  { id: "b2", lettre: "B", texte: "Bof…", profil: "hesitation" },
-  { id: "b3", lettre: "B", texte: "Banco, je fonce !", profil: "fonceur" },
-  { id: "b4", lettre: "B", texte: "Basta !", profil: "refus" },
-  { id: "b5", lettre: "B", texte: "Bandant 😏", profil: "coquin" },
-];
-
-// Paquet dédié aux cartes Défi — indépendant du pack M/B du joueur
-const REACTIONS_D = [
-  { id: "d1", lettre: "D", texte: "Dingue, j'adore !", profil: "envie" },
-  { id: "d2", lettre: "D", texte: "Doucement, laisse-moi réfléchir…", profil: "hesitation" },
-  { id: "d3", lettre: "D", texte: "Direct, je fonce !", profil: "fonceur" },
-  { id: "d4", lettre: "D", texte: "Décliné.", profil: "refus" },
-  { id: "d5", lettre: "D", texte: "Dévergondé·e à souhait 😏", profil: "coquin" },
-];
 
 // ------------------------------------------------------------
-// Gages et récompenses
+// Gages — sortent parfois à la place d'une situation (voir engine.js)
 // ------------------------------------------------------------
-const RECOMPENSES_GAGNANT = [
-  "Tu choisis le gage du/de la dernier·ère dans la liste, ou tu en inventes un.",
-  "Tu es servi·e par les autres joueurs pendant 10 minutes (boisson, snack).",
-  "Tu gagnes une carte Véto bonus pour la prochaine partie.",
-  "Tu poses une question cash à un joueur de ton choix, qui doit répondre sans véto.",
-];
-
-const GAGES_DOUX = [
+const GAGES_DOUX_BASE = [
   "Imiter un animal au choix du groupe pendant une minute.",
   "Parler avec l'accent imposé par le groupe pendant trois tours.",
   "Faire un compliment sincère à chaque joueur, un par un.",
@@ -371,7 +340,7 @@ const GAGES_DOUX = [
   "Envoyer un mème choisi par le groupe dans ton groupe de discussion familial.",
 ];
 
-const GAGES_PIQUANT = [
+const GAGES_PIQUANT_BASE = [
   "Raconter ton pire rendez-vous amoureux, en détail.",
   "Danser sensuellement pendant trente secondes devant le groupe.",
   "Faire un massage de deux minutes à un joueur consentant.",
@@ -380,28 +349,225 @@ const GAGES_PIQUANT = [
   "Laisser le groupe fouiller ta galerie photo pendant une minute (tu peux en retirer une avant).",
 ];
 
-const GAGES_FOU = [
+const GAGES_FOU_BASE = [
   "Chanter en public, dans la rue ou sur un balcon.",
   "Appeler un ami pour lui faire une déclaration absurde et assumée.",
   "Laisser le groupe choisir ta photo de profil pendant une heure.",
-  "Porter un vêtement du gagnant pendant le reste de la soirée.",
+  "Porter un vêtement d'un autre joueur pendant le reste de la soirée.",
   "Envoyer un message vocal chanté à la dernière personne contactée.",
-  "Faire une story publique où tu avoues ta défaite, façon grand discours.",
+  "Faire une story publique où tu avoues un petit secret, façon grand discours.",
 ];
+
+// Gages "soft" — 100 défis romantiques/amusants, non explicites.
+const GAGES_JAMAIS_SOFT = [
+  "La déclaration — Faire une déclaration d'amour de 2 minutes sans utiliser les mots «aimer» et «je».",
+  "Le compliment miroir — Trouver 3 qualités physiques et 3 qualités mentales chez l'autre en direct.",
+  "La playlist de l'amour — Créer et envoyer une playlist de 5 chansons qui font penser à votre histoire.",
+  "Le premier regard — Raconter en détail ses souvenirs exacts du jour de votre toute première rencontre.",
+  "Le poème d'amour — Écrire un petit poème mignon ou rigolo avec le prénom de l'autre.",
+  "La promesse douce — Promettre de cuisiner le plat préféré de l'autre lors de vos prochaines retrouvailles.",
+  "Le selfie grimace — Envoyer la grimace la plus laide et drôle possible pour faire rire l'autre.",
+  "Le doudou en scène — Faire parler une peluche ou un objet de sa chambre face caméra pour dire un mot doux.",
+  "Le baiser virtuel sur le front — S'approcher de l'écran et mimer un bisou protecteur sur le front.",
+  "Le secret d'enfance — Raconter une bêtise ou une anecdote honteuse mais mignonne de quand on était petit.",
+  "La chanson partagée — Lancer la même chanson en même temps et la chanter ensemble à tue-tête.",
+  "Le dessin express — Dessiner le portrait de l'autre en 30 secondes chrono et lui montrer le résultat (souvent râté !).",
+  "La lettre du futur — Écrire un court message à ouvrir ensemble dans un an pile.",
+  "Le compliment caché — Cacher un mot d'amour dans une photo d'un objet du quotidien chez soi.",
+  "La soirée film synchro — Choisir un film et lancer «Play» exactement à la même seconde pour le regarder ensemble.",
+  "Le mime amoureux — Mimer un mot romantique (ex: Mariage, Câlin, Dîner) face caméra, l'autre doit deviner.",
+  "Le rituel du soir — Envoyer un message de bonne nuit à une heure ultra-précise avec un rituel mignon.",
+  "L'anecdote «Coup de foudre» — Raconter le moment exact où on s'est dit «Wow, je suis amoureux/se».",
+  "Le jeu des 3 vœux — Partager les 3 voyages ou projets de vie les plus fous qu'on veut faire à deux.",
+  "La photo souvenir — Fouiller dans ses albums et envoyer une vieille photo de soi dossier ou mignonne.",
+  "Le surnom ridicule — Accepter de porter un surnom totalement kitch ou drôle pendant les prochaines 24 heures.",
+  "Le massage de mains — Se masser les mains face caméra en expliquant à quel point on aimerait masser celles de l'autre.",
+  "Le dictionnaire des amoureux — Créer un mot inventé qui définit parfaitement votre couple.",
+  "Le cocktail virtuel — Préparer un verre ou un café et trinquer face à l'écran.",
+  "La citation inspirante — Trouver une citation de film ou de livre qui résume votre amour et l'envoyer.",
+  "Le vœu sur l'étoile — Regarder par la fenêtre en même temps et chercher la plus belle étoile.",
+  "La minute nostalgie — Relire à voix haute le tout premier message ou SMS envoyé au début de la relation.",
+  "Le post-it d'amour — Écrire un mot doux sur un post-it, le coller sur son miroir et envoyer la photo.",
+  "Le défi du rire — Essayer de faire rire l'autre en faisant des bruits étranges ou des blagues carambar.",
+  "Le regard tendre — Se regarder amoureusement dans les yeux à l'écran sans parler pendant 1 minute complète.",
+  "Le compliment sur le vêtement — Dire pourquoi la tenue actuelle de l'autre lui va super bien.",
+  "La devinette humeur — Deviner l'état d'esprit exact de l'autre uniquement en regardant ses yeux à la caméra.",
+  "Le moment de gratitude — Remercier l'autre pour une action ou un soutien précis qu'il/elle a apporté récemment.",
+  "L'animal totem — Choisir quel animal l'autre serait s'il devait se réincarner, et expliquer pourquoi.",
+  "Le baiser papillon — Cligner des yeux très près de l'objectif pour mimer un baiser papillon.",
+  "L'équilibre — Tenir un livre sur sa tête en marchant en ligne droite devant la caméra sans le faire tomber.",
+  "Le flamant rose — Rester sur une seule jambe pendant toute la durée du prochain appel ou pendant 2 minutes.",
+  "La coiffure folle — Se faire une coiffure totalement absurde (crête, tresses folles, palmier) et la garder 10 minutes.",
+  "Le défi de l'accent — Parler avec un accent (québécois, marseillais, british) jusqu'à la fin du jeu.",
+  "La chaussette dépareillée — Montrer ses pieds à la caméra avec deux chaussettes totalement différentes.",
+  "Le roi du mime — Imiter un animal au choix de l'autre (bruit compris) de la façon la plus réaliste possible.",
+  "Le poirier — Tenter de faire le poirier contre un mur ou de toucher ses pieds sans plier les genoux.",
+  "La cuisine aveugle — Aller chercher un aliment dans le frigo les yeux bandés et le deviner à l'odeur ou au goût.",
+  "Le verre d'eau — Boire un grand verre d'eau d'une seule traite sans s'arrêter.",
+  "La tenue arc-en-ciel — S'habiller en moins de 2 minutes en portant au moins 5 couleurs différentes.",
+  "L'avatar — Laisser l'autre choisir la photo de profil de votre compte de messagerie pour la soirée.",
+  "La rime imposée — Terminer toutes ses phrases par le son «OU» pendant 5 minutes.",
+  "Le robot — Parler et bouger comme un robot dès que l'autre prononce un mot magique.",
+  "La sculpture sur fruits — Sculpter un visage ou une forme dans une pomme ou une banane et montrer l'œuvre d'art.",
+  "Le karaoké muet — Mimer les paroles d'une chanson énergique face caméra sans sortir aucun son.",
+  "L'empilement — Essayer d'empiler le plus d'objets possible (crayons, pièces) sur sa main sans que ça tombe.",
+  "Le sérieux absolu — Essayer de raconter l'histoire des trois petits cochons sans faire le moindre sourire.",
+  "L'ordre ménager — Ranger un tiroir ou faire son lit en direct sous les encouragements (ou les ordres) de l'autre.",
+  "L'écriture du pied — Essayer d'écrire le prénom de l'autre avec un stylo entre les orteils et envoyer la photo.",
+  "Le blind test — Faire deviner une chanson à l'autre en la fredonnant uniquement avec des «BZZZ».",
+  "Le double vêtement — Enfiler deux t-shirts ou deux pantalons l'un sur l'autre en moins d'une minute.",
+  "Le poète de l'absurde — Écrire un poème dédié à un objet du quotidien (ex: sa brosse à dents ou son micro-ondes).",
+  "Le jumeau de position — S'asseoir ou s'allonger exactement dans la même posture que l'autre à l'écran.",
+  "La statue — S'immobiliser instantanément au mot «STOP» et ne plus bouger jusqu'au signal de l'autre.",
+  "Le défi des abdos — Faire 15 abdos ou 10 pompes en direct sous les yeux de son partenaire.",
+  "L'imitation de star — Imiter une célébrité connue ou un personnage de film (ex: Dark Vador, Gollum).",
+  "Le chapeau insolite — Trouver un objet chez soi qui n'est pas un chapeau (passoire, coussin) et le mettre sur sa tête.",
+  "Le conteur d'histoire — Inventer une histoire folle en commençant chaque phrase par la lettre suivante de l'alphabet.",
+  "L'envers de l'endroit — Mettre son pull ou son t-shirt complètement à l'envers pour le reste de la visio.",
+  "La grimace finale — Faire la plus affreuse grimace possible pile au moment de raccrocher le téléphone.",
+  "La voix de dessin animé — Parler avec une voix super aiguë (façon Mickey ou Donald) pendant 2 minutes.",
+  "Le jeu du «Ni oui ni non» — Tenir 3 minutes de conversation sans dire les mots magiques sous peine de gage.",
+  "Le tour de magie — Tenter de faire un tour de magie (même raté ou totalement évident) face caméra.",
+  "L'ombre chinoise — Utiliser la lampe de son téléphone pour faire une forme d'animal sur le mur.",
+  "Le pas de danse ridicule — Inventer une chorégraphie de 10 secondes totalement loufoque.",
+  "La vérité vraie — Répondre à la question : «Quelle est la pire manie que j'ai et que tu supportes en silence ?».",
+  "Le rêve secret — Révéler un rêve totalement fou ou irréaliste que l'on n'a jamais dit à personne.",
+  "Le premier mensonge — Avouer un tout petit mensonge ou une feinte utilisée au début de la relation pour plaire.",
+  "Le pire rendez-vous — Raconter son pire rendez-vous amoureux de sa vie (avant de rencontrer l'autre).",
+  "La peur cachée — Avouer une phobie ou une peur totalement ridicule (peur des papillons, des boutons de vestes...).",
+  "L'avis sincère — Dire quel vêtement dans l'armoire de l'autre on aime le moins.",
+  "La fierté — Partager la plus grande fierté personnelle de sa vie actuelle.",
+  "Le souvenir d'enfance — Décrire son doudou ou son jouet préféré quand on avait 6 ans.",
+  "Le super-pouvoir — Choisir le super-pouvoir qu'on aimerait donner à l'autre pour faciliter la distance.",
+  "Le moment de gêne — Raconter le plus grand moment de solitude ou de honte vécu au travail ou à l'école.",
+  "La chanson honteuse — Avouer quelle chanson totalement ringarde on adore écouter à fond sous la douche.",
+  "La manie secrète — Révéler un tic ou une manie bizarre que l'on fait uniquement quand on est totalement seul(e).",
+  "Le talent caché — Montrer ou raconter un mini talent inutile (savoir bouger les oreilles, imiter le cri du dauphin...).",
+  "Le premier baiser — Décrire ce que l'on a ressenti à la milliseconde exacte après votre premier baiser.",
+  "Le film culte secret — Avouer le film «honteux» ou ultra-kitch que l'on peut regarder en boucle sans se lasser.",
+  "La question inversée — Poser une question indiscrète à l'autre, qu'il/elle est obligé(e) d'y répondre sincèrement.",
+  "L'idole d'adolescence — Révéler de quelle star on était secrètement amoureux au collège ou au lycée.",
+  "Le moment de complicité — Dire quel est le rituel à deux que l'on préfère par-dessus tout.",
+  "Le mot doux préféré — Révéler le surnom affectueux parmi tous ceux utilisés qui fait le plus chaud au cœur.",
+  "La confidence gourmande — Avouer le péché mignon alimentaire le plus étrange que l'on mange en cachette.",
+  "Le rêve de voyage — Décrire la destination exacte où on aimerait être téléporté avec l'autre tout de suite.",
+  "Le plus beau compliment — Rappeler le plus beau compliment que l'autre nous ait jamais fait.",
+  "Le fou rire passé — Se remémorer le plus grand fou rire partagé ensemble et expliquer pourquoi c'était si drôle.",
+  "La faiblesse — Dire quelle petite attention ou quel geste de l'autre fait fondre nos défenses à coup sûr.",
+  "La qualité cachée — Dire une qualité que l'autre possède mais qu'il/elle a tendance à minimiser ou ne pas voir.",
+  "Le souvenir d'odeur — Décrire l'odeur ou le parfum de l'autre et ce que ça provoque quand on y pense.",
+  "Le grand projet — Partager un projet créatif ou une envie manuelle qu'on aimerait tester à deux un jour.",
+  "La première impression — Raconter en toute franchise ce qu'on s'est dit dans sa tête la première fois qu'on a vu sa photo.",
+  "La petite habitude — Révéler le petit message quotidien de l'autre qui illumine le plus la journée.",
+  "Le mot de la fin — Trouver un seul adjectif pour qualifier la beauté ou le charme de la relation.",
+];
+
+// Gages "charme & tension" — suggestifs/allusifs, jamais explicites.
+const GAGES_JAMAIS_CHARME = [
+  "Le défilé habillé — Faire un mini défilé avec la tenue la plus classe de son armoire.",
+  "Le regard intense — Fixer la caméra sans ciller pendant 30 secondes en pensant à un souvenir complice.",
+  "La danse rien que pour toi — Danser une minute entière, habillé·e, rien que pour l'autre.",
+  "Le bisou à l'écran — Embrasser l'écran langoureusement, les yeux fermés.",
+  "Le glaçon joueur — Passer un glaçon sur son cou en regardant l'autre dans les yeux.",
+  "La pose de charme — Tenir une pose glamour 15 secondes sans rire.",
+  "La lecture suggestive — Lire un passage d'un roman à l'eau de rose d'une voix douce.",
+  "Le gros plan mystère — Montrer un zoom rapide (main, nuque, sourire) puis couper.",
+  "Le massage des mains — Se masser les mains lentement en expliquant comment on masserait celles de l'autre.",
+  "La coiffure décoiffée — Détacher ses cheveux en secouant la tête, façon pub de shampoing.",
+  "La caresse du tissu — Faire glisser un foulard ou une plume sur son bras.",
+  "Le murmure au micro — S'approcher très près du micro pour chuchoter un compliment.",
+  "L'empreinte de rouge à lèvres — Faire un bisou sur une feuille et la montrer à l'écran.",
+  "Le dos qui se dévoile — Se retourner et montrer son dos quelques secondes, façon tableau.",
+  "Le souffle sur la caméra — Souffler pour faire de la buée sur l'objectif, puis dessiner un cœur.",
+  "Le regard à travers le miroir — Se filmer dans un miroir en gardant un œil sur la caméra.",
+  "La morsure de lèvre — Se mordre la lèvre en regardant l'autre avec insistance, sans un mot.",
+  "Le déshabillage du regard — Regarder l'autre de haut en bas pendant 20 secondes, en silence, sans rien enlever.",
+  "Le coin plus intime — Déplacer la caméra vers un coin plus calme de la pièce pour la suite de la conversation.",
+  "La pénombre — Éteindre la lumière principale et ne garder qu'une bougie ou la lumière du téléphone.",
+  "L'invitation du regard — Montrer du doigt l'endroit exact où on aimerait un bisou, sans se déshabiller.",
+  "Le compliment filmé — Dire à voix haute, face caméra, ce qu'on trouve le plus charmant chez l'autre.",
+  "Le clin d'œil chronométré — Envoyer un clin d'œil appuyé toutes les 30 secondes pendant 2 minutes.",
+  "La bougie dédiée — Allumer une bougie et dire pour qui elle est allumée.",
+  "Le sourire en coin — Garder un sourire mystérieux et dire un seul mot : « bientôt ».",
+  "Le silence complice — Se regarder sans parler pendant une minute complète, juste sourire.",
+  "Le texto tenue — Décrire en une phrase élégante la tenue qu'on porte, sans rien dévoiler de cru.",
+  "Le scénario romantique — Raconter en 5 phrases un rendez-vous de rêve à venir.",
+  "L'acronyme doux — Créer une phrase tendre avec les lettres du prénom du/de la partenaire.",
+  "Le mot de remplacement — Remplacer « tu » par un surnom coquin dans tous les messages pendant une heure.",
+  "Le poème à rimes — Écrire un quatrain qui complimente l'autre, sans un mot cru.",
+  "L'aveu de rêve — Raconter un rêve romantique marquant qu'on a fait à propos de l'autre.",
+  "La liste des 3 lieux — Envoyer 3 destinations de rêve où on aimerait un tête-à-tête.",
+  "Le compte à rebours doux — Envoyer un message toutes les 10 minutes disant à quel point on a hâte de se voir.",
+  "Le défi tendre — Donner un petit ordre doux à l'autre (« envoie-moi ta chanson préférée du moment »), à exécuter immédiatement.",
+  "Le dictionnaire amoureux — Inventer une définition imagée et douce d'un mot tendre.",
+  "La fausse confession — Inventer un faux fantasme de voyage complètement loufoque, avant d'avouer que c'était un jeu.",
+  "L'histoire à deux mains — Commencer une petite histoire romantique par SMS, l'autre écrit la suite, et ainsi de suite.",
+  "Le message codé — Envoyer 10 émojis évocateurs, l'autre doit deviner la phrase.",
+  "L'heure du rendez-vous — Fixer une heure précise où les deux s'envoient un message en même temps.",
+  "Le texto du jour — Glisser un compliment osé au milieu d'un message totalement banal.",
+  "Le souvenir précis — Décrire un souvenir complice marquant, sans rien de cru.",
+  "Le gage élégance — Décrire la couleur de sa tenue du jour, sans plus de détail.",
+  "Le SMS à une main — Écrire un message tendre sans utiliser ses deux pouces, fautes de frappe autorisées.",
+  "Le top 5 — Lister 5 choses qu'on adore chez l'autre.",
+  "Le chantage doux — Proposer un échange, une petite faveur contre une photo (habillée) mystère.",
+  "Le mot doux camouflé — Glisser une phrase tendre au milieu d'une liste de courses.",
+  "L'avis de recherche — Rédiger un faux avis de recherche pour « vol de cœur ».",
+  "L'interdit du soir — Interdire à l'autre de s'endormir sans avoir pensé à un souvenir précis.",
+  "Le compliment élégant — Dire ce qu'on préfère chez l'autre, dans un registre soigné, sans détail cru.",
+  "Le contrat d'une nuit — Écrire un faux contrat rigolo d'engagement pour le prochain rendez-vous.",
+  "La métaphore culinaire — Décrire son humeur du moment uniquement avec des métaphores de nourriture.",
+  "Le jeu des contraires — Écrire un message très sage, et glisser un seul émoji taquin à la fin.",
+  "Le flash romantique — Écrire un SMS ultra-court et évocateur, sans un mot cru (ex : « Je pense à toi, là, maintenant »).",
+  "La question piège — Demander si l'autre préfère la lumière allumée ou éteinte, et pourquoi, sans entrer dans les détails.",
+  "Le SMS d'impatience — Compter les heures restantes avant de se revoir, dans un message.",
+  "Le défi des synonymes doux — Trouver 5 mots tendres différents pour dire « je pense à toi ».",
+  "La promesse sur l'honneur — S'engager par écrit à réaliser une envie de l'autre au prochain rendez-vous.",
+  "Le message vocal écrit — Écrire un texte avec des indications d'ambiance entre parenthèses, genre (soupir attendri), (petit rire).",
+  "Le texto mystère — Écrire « Si tu savais à quoi je pense… » et attendre 5 minutes avant de répondre.",
+  "Le dernier mot — Clore la conversation par un mot doux qui donne le sourire toute la nuit.",
+  "Le murmure nocturne — Enregistrer un vocal en chuchotant un compliment, au plus près du micro.",
+  "Le compliment brûlant — Dire à voix haute ce qui plaît le plus chez l'autre.",
+  "La voix du réveil — Dire un mot doux avec sa vraie voix du matin, sans artifice.",
+  "Le bruit mystère — Faire un petit bruit (bisou soufflé, claquement de doigts) que l'autre doit deviner.",
+  "Le chant romantique — Fredonner un air de chanson d'amour connue.",
+  "La lecture de poésie — Lire un poème classique (Baudelaire, Verlaine) d'un ton doux et posé.",
+  "Le guidage à distance — Dire à l'autre, étape par étape, comment se détendre les épaules.",
+  "Le mot de passe tendre — Inventer un mot doux secret à répéter dès qu'on pense à l'autre.",
+  "Le compte à rebours vocal — Compter de 10 à 1 d'une voix de plus en plus posée et chaleureuse.",
+  "L'histoire du soir — Raconter une anecdote romantique, vraie ou inventée, d'une voix douce.",
+  "Le jeu de rôle léger — Prendre une voix différente (prof, inconnu charmant) pendant 2 minutes, dans un registre fun.",
+  "L'ordre tendre — Dire « Ferme les yeux et pense à notre dernier bon souvenir » d'un ton calme.",
+  "L'aveu du matin — Enregistrer un vocal au réveil racontant sa toute première pensée du jour.",
+  "La respiration partagée — Rester en ligne une minute sans parler, juste à s'écouter respirer.",
+  "Le mot soufflé — Dire un seul mot doux (ex : « viens », « toujours ») et couper juste après.",
+  "Le rire complice — Envoyer un petit rire spontané et un brin taquin.",
+  "La description du lieu — Décrire l'ambiance de la pièce où on se trouve (lumière, musique) pour faire voyager l'autre.",
+  "Le baiser sonore — Envoyer 3 bruits de bisous différents (rapide, doux, appuyé).",
+  "Le secret partagé — Révéler à voix haute un souvenir tendre qu'on n'a jamais raconté.",
+  "La confidence sur la voix — Dire à l'autre ce qu'on aime le plus dans sa façon de parler.",
+  "La chanson d'ambiance — Mettre une musique douce en fond et laisser tourner le vocal 30 secondes.",
+  "Le défi de la rapidité — Dire 10 mots doux le plus vite possible sans se tromper.",
+  "L'improvisation tendre — Inventer un compliment en utilisant les mots « lumière », « doux » et « minuit ».",
+  "Le souffle sur le micro — Souffler doucement sur le micro pour imiter une caresse à l'oreille.",
+  "Le ton assuré — Fixer une heure de rendez-vous d'une voix ferme et joueuse, sans retard autorisé.",
+  "Le dernier mot vocal — Clore le message par une phrase que l'autre gardera en tête toute la soirée.",
+];
+
+const GAGES_DOUX = GAGES_DOUX_BASE.concat(GAGES_JAMAIS_SOFT);
+const GAGES_PIQUANT = GAGES_PIQUANT_BASE.concat(GAGES_JAMAIS_SOFT);
+const GAGES_COQUIN = GAGES_JAMAIS_CHARME.slice();
+const GAGES_BRULANT = GAGES_FOU_BASE.concat(GAGES_JAMAIS_CHARME);
 
 const NIVEAUX_GAGES = {
   doux: GAGES_DOUX,
   piquant: GAGES_PIQUANT,
-  fou: GAGES_FOU,
+  coquin: GAGES_COQUIN,
+  brulant: GAGES_BRULANT,
 };
 
 const BoomCartes = {
   NIVEAUX,
   CARTES,
-  REACTIONS_M,
-  REACTIONS_B,
-  REACTIONS_D,
-  RECOMPENSES_GAGNANT,
   NIVEAUX_GAGES,
 };
 

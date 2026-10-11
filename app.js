@@ -18,7 +18,7 @@
   // Numéro de build affiché en bas de l'écran d'accueil — sert à vérifier
   // qu'un téléphone a bien reçu la dernière version déployée (et pas une
   // copie mise en cache par le navigateur).
-  const VERSION_APP = "2026-09-19-2";
+  const VERSION_APP = "2026-10-11-3";
 
   // Un joueur sur téléphone n'a pas accès à la console développeur : sans
   // ça, une erreur JavaScript est invisible et donne l'impression que "rien
@@ -47,7 +47,7 @@
     afficherBanniereErreur((raison && (raison.message || String(raison))) || "promesse rejetée");
   });
 
-  const { NIVEAUX, NIVEAUX_GAGES } = window.BoomCartes || require("./cartes.js");
+  const { NIVEAUX } = window.BoomCartes || require("./cartes.js");
   const Engine = window.BoomEngine;
 
   // ------------------------------------------------------------
@@ -74,7 +74,6 @@
     vetosParJoueur: 2,
     nbManches: 15,
     joueursLocaux: [],    // construction de la liste avant démarrage (local & hôte)
-    packEnCours: null,    // pack sélectionné dans le formulaire d'ajout
   };
 
   let gameState = null;   // état du moteur (autorité locale ou hôte)
@@ -113,10 +112,6 @@
     if (!etat.cartesUtilisees) etat.cartesUtilisees = [];
     if (!etat.historique) etat.historique = [];
     if (!etat.commentaires) etat.commentaires = [];
-    if (etat.manche) {
-      if (!etat.manche.paris) etat.manche.paris = {};
-      if (etat.manche.joker && !etat.manche.joker.votes) etat.manche.joker.votes = {};
-    }
     return etat;
   }
 
@@ -183,11 +178,7 @@
     const gestionnaires = {
       "mode-local": () => demarrerConfiguration("local"),
       "mode-hote": () => demarrerConfiguration("hote"),
-      "mode-invite": () => {
-        contexte.packEnCours = null;
-        $$("#ecran-rejoindre .btn-pack").forEach((b) => b.classList.remove("actif"));
-        afficherEcran("ecran-rejoindre");
-      },
+      "mode-invite": () => afficherEcran("ecran-rejoindre"),
       "retour-accueil": () => { reinitialiser(); afficherEcran("ecran-accueil"); },
       "voir-regles": () => $("#modale-regles").classList.add("ouverte"),
       "fermer-regles": () => $("#modale-regles").classList.remove("ouverte"),
@@ -205,12 +196,6 @@
   });
 
   document.addEventListener("click", (ev) => {
-    const pack = ev.target.closest(".btn-pack");
-    if (pack) {
-      $$(".btn-pack").forEach((b) => b.classList.remove("actif"));
-      pack.classList.add("actif");
-      contexte.packEnCours = pack.dataset.pack;
-    }
     const veto = ev.target.closest("[data-veto-delta]");
     if (veto) {
       const sel = $("#selecteur-vetos");
@@ -301,7 +286,7 @@
     $("#aide-joueurs").textContent =
       role === "hote"
         ? "Ajoute-toi en premier, puis attends que les autres rejoignent avec le code."
-        : "Ajoute chaque joueur avec son prénom et son paquet de réactions.";
+        : "Ajoute chaque joueur avec son prénom.";
 
     afficherEcran("ecran-config");
   }
@@ -311,12 +296,9 @@
     const nom = champ.value.trim();
     $("#erreur-config").textContent = "";
     if (!nom) { $("#erreur-config").textContent = "Donne un prénom."; return; }
-    if (!contexte.packEnCours) { $("#erreur-config").textContent = "Choisis un paquet, M ou B."; return; }
     const id = `l${Date.now()}${Math.floor(Math.random() * 1000)}`;
-    contexte.joueursLocaux.push({ id, nom, pack: contexte.packEnCours });
+    contexte.joueursLocaux.push({ id, nom });
     champ.value = "";
-    $$(".btn-pack").forEach((b) => b.classList.remove("actif"));
-    contexte.packEnCours = null;
     redessinerListeJoueurs();
 
     if (contexte.role === "hote" && contexte.joueursLocaux.length === 1) {
@@ -334,7 +316,6 @@
       const retirable = !(contexte.role === "hote" && j.distant);
       ligne.innerHTML = `
         <span>${j.nom}</span>
-        <span class="pack-tag ${j.pack}">${j.pack}</span>
         ${retirable ? `<button class="btn-retirer" data-retirer="${i}">✕</button>` : `<span class="texte-aide">en ligne</span>`}
       `;
       zone.appendChild(ligne);
@@ -435,7 +416,6 @@
         contexte.joueursLocaux.push({
           id: joueurId,
           nom: String(info.nom || "Invité").slice(0, 20),
-          pack: info.pack === "B" ? "B" : "M",
           distant: true,
         });
         changement = true;
@@ -468,7 +448,7 @@
 
   function diffuserLobby() {
     if (!refSalon) return;
-    const liste = contexte.joueursLocaux.map((j) => ({ nom: j.nom, pack: j.pack }));
+    const liste = contexte.joueursLocaux.map((j) => ({ nom: j.nom }));
     refSalon.child("lobby").set({ joueurs: liste }).catch((e) => console.error("Échec d'envoi du lobby", e));
   }
 
@@ -509,13 +489,11 @@
     $("#erreur-rejoindre").textContent = "";
     if (code.length !== 4) { $("#erreur-rejoindre").textContent = "Le code fait 4 lettres."; return; }
     if (!nom) { $("#erreur-rejoindre").textContent = "Donne ton prénom."; return; }
-    if (!contexte.packEnCours) { $("#erreur-rejoindre").textContent = "Choisis un paquet, M ou B."; return; }
     if (!db) { $("#erreur-rejoindre").textContent = "Connexion en ligne indisponible (configuration manquante)."; return; }
 
     contexte.role = "invite";
     codeSalonRejoint = code;
     nomInvite = nom;
-    const packInvite = contexte.packEnCours;
     if (!monJoueurId) monJoueurId = genererIdJoueur();
     contexte.moiId = monJoueurId;
     $("#erreur-rejoindre").textContent = "Connexion au salon…";
@@ -529,7 +507,7 @@
           return;
         }
         refSalon = cible;
-        return refSalon.child("inscriptions/" + monJoueurId).set({ nom: nomInvite, pack: packInvite });
+        return refSalon.child("inscriptions/" + monJoueurId).set({ nom: nomInvite });
       })
       .then(() => {
         if (!refSalon) return; // le salon n'existait pas, déjà signalé plus haut
@@ -554,7 +532,7 @@
       (val.joueurs || []).forEach((j) => {
         const ligne = document.createElement("div");
         ligne.className = "ligne-joueur";
-        ligne.innerHTML = `<span>${j.nom}</span><span class="pack-tag ${j.pack}">${j.pack}</span>`;
+        ligne.innerHTML = `<span>${j.nom}</span>`;
         zone.appendChild(ligne);
       });
     });
@@ -654,26 +632,8 @@
       case "valider-defi":
         Engine.validerDefi(gameState, payload.defiId, !!payload.reussi);
         break;
-      case "reaction":
-        Engine.choisirReaction(gameState, actorId, payload.reactionId);
-        if (gameState.manche.avecQui) gameState.manche.avecQuiEnAttente = (payload.avecQuiTexte || "").trim();
-        break;
-      case "joker":
-        Engine.utiliserJoker(gameState, actorId, payload.texte);
-        break;
-      case "joker-vote":
-        Engine.voterJoker(gameState, actorId, !!payload.approuve);
-        {
-          const attendus = gameState.joueurs.filter((j) => j.id !== gameState.manche.cibleId).map((j) => j.id);
-          const tousVote = attendus.every((id) => gameState.manche.joker.votes[id] !== undefined);
-          if (tousVote) Engine.resoudreJoker(gameState);
-        }
-        break;
-      case "parier":
-        Engine.parier(gameState, actorId, payload.reactionId);
-        if (Engine.pariComplet(gameState)) {
-          Engine.resoudreManche(gameState, gameState.manche.avecQuiEnAttente);
-        }
+      case "valider-manche":
+        Engine.validerManche(gameState, payload.avecQuiReponse);
         break;
       case "manche-suivante":
         Engine.demarrerManche(gameState);
@@ -765,104 +725,30 @@
     if (id === "ecran-jeu") {
       actualiserEcranJeu();
     } else if (id === "ecran-fin") {
-      rendrePodium();
-      rendreConsequences();
-      rendreDefisAttenteFin();
-      rendreChat($("#commentaires-fin"));
+      rendreFinEcran();
     }
   }
 
   // ------------------------------------------------------------
   // Orchestration du mode local (pass-and-play)
   // ------------------------------------------------------------
+  // Depuis la simplification des règles, il n'y a plus rien à cacher aux
+  // autres joueurs (ni pari, ni réaction secrète) : le téléphone reste
+  // posé au milieu du groupe, la Cible répond/agit devant tout le monde.
   function demarrerMancheEtTransferer() {
     const m = Engine.demarrerManche(gameState);
     if (!m) { afficherFin(); return; }
-    contexte.moiId = null;
-    local_avancer();
-  }
-
-  function joueursRestants(idsDejaFaits, exclureId) {
-    return gameState.joueurs
-      .filter((j) => j.id !== exclureId)
-      .map((j) => j.id)
-      .filter((id) => !idsDejaFaits.includes(id));
+    contexte.moiId = m.cibleId;
+    afficherEcran("ecran-jeu");
+    actualiserEcranJeu();
   }
 
   function local_avancer() {
     const m = gameState.manche;
     if (!m) { demarrerMancheEtTransferer(); return; }
-
-    if (m.phase === "texte_libre") {
-      if (contexte.moiId !== m.cibleId) {
-        montrerTransfert(m.cibleId, "À toi d'inventer la situation, sans filtre 🤫", () => {
-          contexte.moiId = m.cibleId;
-          afficherEcran("ecran-jeu");
-          actualiserEcranJeu();
-        });
-      } else {
-        afficherEcran("ecran-jeu");
-        actualiserEcranJeu();
-      }
-      return;
-    }
-
-    if (m.phase === "reaction_cible") {
-      if (contexte.moiId !== m.cibleId) {
-        montrerTransfert(m.cibleId, "C'est à ton tour de répondre 🤫", () => {
-          contexte.moiId = m.cibleId;
-          afficherEcran("ecran-jeu");
-          actualiserEcranJeu();
-        });
-      } else {
-        afficherEcran("ecran-jeu");
-        actualiserEcranJeu();
-      }
-      return;
-    }
-
-    if (m.phase === "joker_vote") {
-      const restants = joueursRestants(Object.keys(m.joker.votes), m.cibleId);
-      avancerFileLocale(restants, "Vote sur son Joker 🃏");
-      return;
-    }
-
-    if (m.phase === "paris") {
-      const restants = joueursRestants(Object.keys(m.paris), m.cibleId);
-      avancerFileLocale(restants, "À toi de parier 🎲");
-      return;
-    }
-
-    if (m.phase === "terminee") {
-      montrerTransfert(null, "Tout le monde est là ? On révèle !", () => {
-        afficherEcran("ecran-jeu");
-        actualiserEcranJeu();
-      }, "Révéler le résultat");
-      return;
-    }
-  }
-
-  function avancerFileLocale(restants, consigne) {
-    if (restants.length === 0) { afficherEcran("ecran-jeu"); actualiserEcranJeu(); return; }
-    const suivant = restants[0];
-    if (contexte.moiId !== suivant) {
-      montrerTransfert(suivant, consigne, () => {
-        contexte.moiId = suivant;
-        afficherEcran("ecran-jeu");
-        actualiserEcranJeu();
-      });
-    } else {
-      afficherEcran("ecran-jeu");
-      actualiserEcranJeu();
-    }
-  }
-
-  function montrerTransfert(joueurId, consigne, onReady, libelleBouton) {
-    $("#transfert-nom").textContent = joueurId ? nomJoueur(joueurId) : "tout le monde 👀";
-    $("#transfert-consigne").textContent = consigne || "Les autres détournent le regard 👀";
-    $("[data-action='transfert-pret']").textContent = libelleBouton || "C'est fait, j'ai le téléphone";
-    apresTransfert = onReady;
-    afficherEcran("ecran-transfert");
+    contexte.moiId = m.cibleId;
+    afficherEcran("ecran-jeu");
+    actualiserEcranJeu();
   }
 
   // ------------------------------------------------------------
@@ -881,27 +767,29 @@
 
     actualiserBarreDefis();
 
-    // Tableau des scores
+    // Liste des joueurs (plus de score : juste un rappel de qui joue)
     const tableau = $("#tableau-scores");
     tableau.innerHTML = "";
     gameState.joueurs.forEach((j) => {
       const chip = document.createElement("div");
       chip.className = "score-chip" + (j.id === m.cibleId ? " est-cible" : "");
-      chip.innerHTML = `<span class="nom">${j.nom}${j.id === m.cibleId ? " 🎯" : ""}</span><span class="pts">${j.score}</span>`;
+      chip.innerHTML = `<span class="nom">${j.nom}${j.id === m.cibleId ? " 🎯" : ""}</span>`;
       tableau.appendChild(chip);
     });
 
-    // Carte
+    // Carte (ou gage, s'il en est sorti un à la place)
     const zoneCarte = $("#zone-carte");
     const cible = gameState.joueurs.find((j) => j.id === m.cibleId);
     const enAttenteTexteLibre = m.libre && m.phase === "texte_libre";
     const texteAffiche = enAttenteTexteLibre
       ? "🃏 Carte libre — la Cible invente sa situation…"
-      : m.carteTexte.replace("{cible}", "…");
+      : m.estGage
+        ? m.gageTexte
+        : m.carteTexte.replace("{cible}", "…");
     zoneCarte.innerHTML = `
-      <span class="etiquette-cible">🎯 Cible : ${cible.nom}${m.defi ? " · Défi" : ""}</span>
+      <span class="etiquette-cible">${m.estGage ? "🎁 Gage pour" : "🎯 Cible :"} ${cible.nom}${m.defi ? " · Défi" : ""}</span>
       <p class="texte-situation">${texteAffiche}</p>
-      ${m.avecQui && !enAttenteTexteLibre ? `<span class="avec-qui">La Cible précisera avec qui, si BOOM il y a.</span>` : ""}
+      ${m.avecQui && !enAttenteTexteLibre ? `<span class="avec-qui">La Cible pourra préciser avec qui, une fois la manche terminée.</span>` : ""}
     `;
 
     const zoneAction = $("#zone-action");
@@ -918,41 +806,11 @@
       return;
     }
 
-    if (m.phase === "reaction_cible") {
+    if (m.phase === "en_cours") {
       if (jeSuisCible) {
-        rendreChoixReaction(zoneAction, m.pack, m);
+        rendreEnCours(zoneAction, m, cible);
       } else {
-        zoneAction.innerHTML = `<div class="zone-attente-cible">🤫 ${cible.nom} choisit sa réaction en secret…</div>`;
-      }
-      return;
-    }
-
-    if (m.phase === "joker_vote") {
-      if (jeSuisCible) {
-        zoneAction.innerHTML = `<div class="zone-attente-cible">🃏 « ${m.joker.texte} »<br>Le groupe vote sur ta réponse…</div>`;
-      } else if (m.joker.votes[contexte.moiId] !== undefined) {
-        zoneAction.innerHTML = `<div class="zone-attente-cible">Vote enregistré. En attente des autres…</div>`;
-      } else {
-        zoneAction.innerHTML = `
-          <div class="resultat-calme"><strong>${cible.nom} joue son Joker :</strong><br>« ${m.joker.texte} »</div>
-          <div class="actions-secondaires">
-            <button class="btn btn-secondaire" data-vote="oui">👍 J'approuve</button>
-            <button class="btn btn-secondaire" data-vote="non">👎 Pas convaincu</button>
-          </div>`;
-        zoneAction.querySelectorAll("[data-vote]").forEach((b) => {
-          b.addEventListener("click", () => envoyerAction("joker-vote", { approuve: b.dataset.vote === "oui" }));
-        });
-      }
-      return;
-    }
-
-    if (m.phase === "paris") {
-      if (jeSuisCible) {
-        zoneAction.innerHTML = `<div class="zone-attente-cible">🎲 Les autres parient sur ta réaction…</div>`;
-      } else if (m.paris[contexte.moiId] !== undefined) {
-        zoneAction.innerHTML = `<div class="zone-attente-cible">Pari enregistré. En attente des autres…</div>`;
-      } else {
-        rendreChoixPari(zoneAction, m.pack);
+        zoneAction.innerHTML = `<div class="zone-attente-cible">👀 ${cible.nom} répond ou agit, sans mise ni pari — juste la vraie réponse…</div>`;
       }
       return;
     }
@@ -986,68 +844,21 @@
     zone.querySelector("[data-action-locale='veto']").addEventListener("click", () => envoyerAction("veto", {}));
   }
 
-  function rendreChoixReaction(zone, pack, m) {
-    const reactions = Engine.reactionsDuPack(pack);
-    const div = document.createElement("div");
-    div.innerHTML = `
-      <p class="texte-aide">Choisis ta réaction en secret (lettre ${pack}) :</p>
-      <div class="grille-reactions"></div>
-      ${m.avecQui ? `<input id="champ-avec-qui" class="champ" placeholder="Avec qui ? (annoncé seulement si BOOM)" maxlength="30" />` : ""}
+  // Plus de pari ni de réaction secrète : la Cible répond ou agit devant
+  // le groupe, puis valide elle-même quand c'est fait pour passer à la
+  // carte suivante. Le Véto reste disponible pour passer la manche.
+  function rendreEnCours(zone, m, cible) {
+    zone.innerHTML = `
+      <p class="texte-aide">${m.estGage ? `${cible.nom}, un gage est tombé pour toi !` : `${cible.nom}, à toi de répondre ou d'agir, sans filtre.`}</p>
+      <button class="btn btn-principal" id="btn-valider-manche">✅ C'est fait, carte suivante</button>
       <div class="actions-secondaires">
-        <button class="btn-veto" data-action-locale="veto" ${estCibleActuelle() && gameState.joueurs.find(j=>j.id===m.cibleId).vetosRestants <= 0 ? "disabled" : ""}>
-          🙅 Véto (${gameState.joueurs.find((j) => j.id === m.cibleId).vetosRestants})
+        <button class="btn-veto" data-action-locale="veto" ${cible.vetosRestants <= 0 ? "disabled" : ""}>
+          🙅 Véto (${cible.vetosRestants})
         </button>
-        <button class="btn-joker" data-action-locale="joker" ${!gameState.joueurs.find((j) => j.id === m.cibleId).jokerDisponible ? "disabled" : ""}>🃏 Joker</button>
       </div>
     `;
-    zone.appendChild(div);
-    const grille = div.querySelector(".grille-reactions");
-    reactions.forEach((r) => {
-      const b = document.createElement("button");
-      b.className = "btn-reaction";
-      b.textContent = r.texte;
-      b.addEventListener("click", () => {
-        const avecQuiTexte = m.avecQui ? ($("#champ-avec-qui") ? $("#champ-avec-qui").value : "") : "";
-        envoyerAction("reaction", { reactionId: r.id, avecQuiTexte });
-      });
-      grille.appendChild(b);
-    });
-    div.querySelector("[data-action-locale='veto']").addEventListener("click", () => envoyerAction("veto", {}));
-    div.querySelector("[data-action-locale='joker']").addEventListener("click", () => rendreSaisieJoker(zone));
-  }
-
-  function estCibleActuelle() {
-    return gameState.manche && contexte.moiId === gameState.manche.cibleId;
-  }
-
-  function rendreSaisieJoker(zone) {
-    zone.innerHTML = `
-      <p class="texte-aide">La réponse la plus incroyable pour toi, en commençant par « Je » ou « J' » :</p>
-      <input id="champ-joker" class="champ" placeholder="Je veux… / J'ai…" maxlength="120" />
-      <button class="btn btn-principal" id="btn-confirmer-joker">Valider mon Joker</button>
-      <p id="erreur-joker" class="texte-erreur"></p>
-    `;
-    zone.querySelector("#btn-confirmer-joker").addEventListener("click", () => {
-      const texte = zone.querySelector("#champ-joker").value.trim();
-      if (!/^(je|j['’])/i.test(texte)) {
-        zone.querySelector("#erreur-joker").textContent = "Ça doit commencer par « Je » ou « J' ».";
-        return;
-      }
-      envoyerAction("joker", { texte });
-    });
-  }
-
-  function rendreChoixPari(zone, packCible) {
-    const reactions = Engine.reactionsDuPack(packCible);
-    zone.innerHTML = `<p class="texte-aide">Quelle réaction va-t-elle/il choisir ?</p><div class="grille-reactions"></div>`;
-    const grille = zone.querySelector(".grille-reactions");
-    reactions.forEach((r) => {
-      const b = document.createElement("button");
-      b.className = "btn-reaction";
-      b.textContent = r.texte;
-      b.addEventListener("click", () => envoyerAction("parier", { reactionId: r.id }));
-      grille.appendChild(b);
-    });
+    zone.querySelector("#btn-valider-manche").addEventListener("click", () => envoyerAction("valider-manche", {}));
+    zone.querySelector("[data-action-locale='veto']").addEventListener("click", () => envoyerAction("veto", {}));
   }
 
   function rendreResultat(zone, m, cible) {
@@ -1055,29 +866,14 @@
     let html = "";
     if (res.type === "veto") {
       html = `<div class="resultat-calme"><h4>Manche passée 🙈</h4><p>${cible.nom} a utilisé une carte Véto.</p></div>`;
-    } else if (res.type === "joker") {
-      html = res.approuve
-        ? `<div class="resultat-boom"><p class="titre-boom">Joker validé ! +3 🎉</p><p>« ${res.texte} »</p></div>`
-        : `<div class="resultat-calme"><h4>Joker non retenu</h4><p>« ${res.texte} »</p></div>`;
-    } else if (res.type === "manche") {
-      const reaction = Engine.reactionsDuPack(m.pack).find((r) => r.id === res.reactionChoisie);
-      if (res.boom) {
-        html = `
-          <div class="resultat-boom">
-            <p class="titre-boom">BOOM 💥</p>
-            <p>${cible.nom} répond : <strong>${reaction.texte}</strong></p>
-            <p>Personne n'avait deviné — +2 pour ${cible.nom} !</p>
-            ${m.avecQui ? `<div id="bloc-avec-qui"></div>` : ""}
-          </div>`;
-      } else {
-        const noms = res.gagnantsPari.map((id) => nomJoueur(id)).join(", ");
-        html = `
-          <div class="resultat-calme">
-            <h4>${cible.nom} répond : ${reaction.texte}</h4>
-            <p>Bien deviné par : ${noms} (+1 chacun)</p>
-            ${m.avecQui ? `<div id="bloc-avec-qui"></div>` : ""}
-          </div>`;
-      }
+    } else {
+      const texteAffiche = m.estGage ? m.gageTexte : m.carteTexte;
+      html = `
+        <div class="resultat-calme">
+          <h4>${m.estGage ? "🎁 Gage réalisé" : "✅ C'est fait"}</h4>
+          <p>${cible.nom} : « ${texteAffiche} »</p>
+          ${m.avecQui ? `<div id="bloc-avec-qui"></div>` : ""}
+        </div>`;
     }
 
     const encoreEnAttente = res.defiId && gameState.defisEnAttente.some((d) => d.id === res.defiId);
@@ -1087,7 +883,7 @@
           <h4>🎯 Défi à valider</h4>
           <p>${cible.nom} devait : « ${m.carteTexte} »</p>
           <div class="actions-secondaires">
-            <button class="btn btn-secondaire" data-defi-valider="1">✅ C'est fait (+2)</button>
+            <button class="btn btn-secondaire" data-defi-valider="1">✅ C'est fait</button>
             <button class="btn btn-secondaire" data-defi-valider="0">❌ Pas fait</button>
           </div>
           <p class="texte-aide">Tu peux aussi le valider plus tard depuis « Défis en attente ».</p>
@@ -1099,7 +895,7 @@
       ? `<button class="btn btn-principal" id="btn-manche-suivante">Manche suivante ➡️</button>`
       : `<div class="zone-attente-cible">En attente de l'hôte pour la suite…</div>`);
 
-    if (m.avecQui && res.type === "manche") {
+    if (m.avecQui && res.type === "fait") {
       rendreBlocAvecQui(zone.querySelector("#bloc-avec-qui"), m, res);
     }
 
@@ -1119,17 +915,10 @@
         } else {
           const m2 = Engine.demarrerManche(gameState);
           if (!m2) {
-            // Partie terminée : on fige la récompense/le gage tirés
-            // (Engine.terminerPartie mémorise le tirage dans
-            // gameState.finale) AVANT de diffuser, pour que tous les
-            // invités reçoivent exactement le même résultat au lieu
-            // d'en tirer un différent chacun de leur côté.
-            finActuelle = Engine.terminerPartie(gameState, "piquant");
+            Engine.terminerPartie(gameState);
             diffuser();
             afficherEcran("ecran-fin");
-            rendrePodium();
-            rendreConsequences();
-            rendreDefisAttenteFin();
+            rendreFinEcran();
             return;
           }
           diffuser();
@@ -1163,7 +952,7 @@
       ligne.innerHTML = `
         <p><span class="nom-cible">${d.cibleNom}</span> — « ${d.texte} »</p>
         <div class="actions-secondaires">
-          <button class="btn btn-secondaire" data-defi="${d.id}" data-reussi="1">✅ Fait (+2)</button>
+          <button class="btn btn-secondaire" data-defi="${d.id}" data-reussi="1">✅ Fait</button>
           <button class="btn btn-secondaire" data-defi="${d.id}" data-reussi="0">❌ Pas fait</button>
         </div>
       `;
@@ -1184,7 +973,7 @@
         <div class="ligne-defi">
           <p><span class="nom-cible">${d.cibleNom}</span> — « ${d.texte} »</p>
           <div class="actions-secondaires">
-            <button class="btn btn-secondaire" data-defi-fin="${d.id}" data-reussi="1">✅ Fait (+2)</button>
+            <button class="btn btn-secondaire" data-defi-fin="${d.id}" data-reussi="1">✅ Fait</button>
             <button class="btn btn-secondaire" data-defi-fin="${d.id}" data-reussi="0">❌ Pas fait</button>
           </div>
         </div>`;
@@ -1197,43 +986,25 @@
   }
 
   // ------------------------------------------------------------
-  // Fin de partie
+  // Fin de partie — plus de score, donc plus de podium ni de
+  // récompense/gage de fin : juste un petit récapitulatif.
   // ------------------------------------------------------------
-  let finActuelle = null; // récompense/gage tirés une seule fois, le classement se rafraîchit ensuite
-
-  function rendrePodium() {
-    const classe = Engine.classement(gameState);
-    const podium = $("#podium");
-    podium.innerHTML = "";
-    classe.forEach((j) => {
-      const ligne = document.createElement("div");
-      ligne.className = "ligne-podium" + (j.rang === 1 ? " premier" : "");
-      ligne.innerHTML = `<span>#${j.rang} ${j.nom}${j.rang === 1 ? " 👑" : ""}</span><span>${j.score} pts</span>`;
-      podium.appendChild(ligne);
-    });
-  }
-
-  function rendreConsequences() {
-    const classe = Engine.classement(gameState);
-    const meilleur = classe[0].score;
-    const pire = classe[classe.length - 1].score;
-    const gagnants = classe.filter((j) => j.score === meilleur);
-    const perdants = classe.filter((j) => j.score === pire);
-    $("#carte-consequence").innerHTML = `
-      <h4>👑 ${gagnants.map((g) => g.nom).join(", ")}</h4>
-      <p>${finActuelle.recompenseSuggeree}</p>
-      <h4>🙈 ${perdants.map((p) => p.nom).join(", ")}</h4>
-      <p>${finActuelle.gageSuggere}</p>
+  function rendreFinEcran() {
+    const n = (gameState.manche ? gameState.manche.numero : gameState.tour) || gameState.tour;
+    $("#recap-fin").innerHTML = `
+      <div class="resultat-calme">
+        <h4>🎉 Bien joué !</h4>
+        <p>${n} manche${n > 1 ? "s" : ""} jouée${n > 1 ? "s" : ""} ce soir.</p>
+      </div>
     `;
+    rendreDefisAttenteFin();
+    rendreChat($("#commentaires-fin"));
   }
 
   function afficherFin() {
-    finActuelle = Engine.terminerPartie(gameState, "piquant");
+    Engine.terminerPartie(gameState);
     afficherEcran("ecran-fin");
-    rendrePodium();
-    rendreConsequences();
-    rendreDefisAttenteFin();
-    rendreChat($("#commentaires-fin"));
+    rendreFinEcran();
     rafraichirModalesOuvertes();
   }
 
@@ -1332,7 +1103,7 @@
           gameState = normaliserEtat(val.etat);
           if (typeof gameState.rng !== "function") gameState.rng = Math.random;
           contexte.joueursLocaux = gameState.joueurs.map((j) => ({
-            id: j.id, nom: j.nom, pack: j.pack, distant: j.id !== monJoueurId,
+            id: j.id, nom: j.nom, distant: j.id !== monJoueurId,
           }));
           attacherEcouteursHote();
           if (gameState.terminee) afficherFin();
@@ -1342,13 +1113,13 @@
           // configuration avec la liste de joueurs déjà inscrits.
           demarrerConfiguration("hote");
           const inscriptions = val.inscriptions || {};
-          contexte.joueursLocaux = [{ id: monJoueurId, nom: "Moi", pack: "M" }];
+          contexte.joueursLocaux = [{ id: monJoueurId, nom: "Moi" }];
           Object.keys(inscriptions).forEach((id) => {
             if (id === monJoueurId) return;
             const info = inscriptions[id] || {};
             contexte.joueursLocaux.push({
               id, nom: String(info.nom || "Invité").slice(0, 20),
-              pack: info.pack === "B" ? "B" : "M", distant: true,
+              distant: true,
             });
           });
           redessinerListeJoueurs();
