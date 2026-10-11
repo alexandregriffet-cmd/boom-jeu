@@ -127,6 +127,13 @@
     const estGage = eligibleGage && state.rng() < state.config.probabiliteGage;
     const gageTexte = estGage ? tirerGage(state, carte.niveau) : null;
 
+    // Une carte "avec qui" (le jeton {cible} dans son texte) doit être
+    // résolue par la Cible AVANT qu'elle ne réponde, pour que la carte
+    // s'affiche complète ("... à Alex") plutôt qu'avec un "…" en attente.
+    // Non applicable aux cartes libres (texte pas encore écrit) ni aux
+    // gages (texte générique, sans jeton {cible}).
+    const demandeAvecQuiDabord = !!carte.avecQui && !carte.libre && !estGage;
+
     state.manche = {
       numero: state.tour,
       carteId: carte.id,
@@ -138,12 +145,29 @@
       estGage,
       gageTexte,
       cibleId,
-      // texte_libre (cartes libres uniquement) | en_cours | terminee
-      phase: carte.libre ? "texte_libre" : "en_cours",
+      // avec_qui (cartes avec {cible}) | texte_libre (cartes libres) |
+      // en_cours | terminee
+      phase: carte.libre ? "texte_libre" : demandeAvecQuiDabord ? "avec_qui" : "en_cours",
       avecQuiReponse: null,
       resultat: null,
     };
     return state.manche;
+  }
+
+  // La Cible choisit AVANT de répondre qui le jeton {cible} de la carte
+  // désigne — la carte s'affiche ensuite résolue ("... à Alex") pour le
+  // reste de la manche. Obligatoire : une carte "avec qui" n'a pas de sens
+  // sans ce prénom.
+  function choisirAvecQui(state, joueurId, texte) {
+    const m = state.manche;
+    if (!m || m.phase !== "avec_qui") throw new Error("Pas le moment de préciser ça.");
+    if (joueurId !== m.cibleId) throw new Error("Seule la Cible précise avec qui, avant de répondre.");
+    const t = (texte || "").trim().slice(0, 60);
+    if (!t) throw new Error("Dis avec qui avant de continuer.");
+    m.avecQuiReponse = t;
+    m.carteTexte = m.carteTexte.replace("{cible}", t);
+    m.phase = "en_cours";
+    return m;
   }
 
   function soumettreTexteLibre(state, joueurId, texte) {
@@ -159,7 +183,7 @@
 
   function utiliserVeto(state, joueurId) {
     const m = state.manche;
-    if (!m || (m.phase !== "en_cours" && m.phase !== "texte_libre")) {
+    if (!m || (m.phase !== "en_cours" && m.phase !== "texte_libre" && m.phase !== "avec_qui")) {
       throw new Error("Pas le moment d'utiliser un véto.");
     }
     if (joueurId !== m.cibleId) throw new Error("Seule la Cible peut passer son tour.");
@@ -173,8 +197,8 @@
   }
 
   // La Cible a répondu/agi : on clôt la manche, sans aucun calcul de
-  // points. Si la carte en demandait un, le champ "avec qui" peut être
-  // précisé maintenant (ou plus tard via preciserAvecQui).
+  // points. Le "avec qui" (s'il y en avait un) a déjà été résolu plus tôt
+  // par choisirAvecQui, avant même cette étape.
   //
   // Sur une carte situation classique (ni Défi, ni gage), la Cible doit
   // choisir une des 5 réponses honnêtes (reponseId) plutôt que de juste
@@ -182,7 +206,7 @@
   // Elle peut aussi écrire sa propre réponse libre (reponseId = "libre",
   // avec reponseLibre rempli) plutôt que de choisir l'une des 5.
   // Les cartes Défi et les gages restent validées tout court.
-  function validerManche(state, reponseId, avecQuiReponse, reponseLibre) {
+  function validerManche(state, reponseId, reponseLibre) {
     const m = state.manche;
     if (!m || m.phase !== "en_cours") throw new Error("Pas le moment de valider cette manche.");
 
@@ -201,7 +225,6 @@
 
     m.reponseId = reponse ? reponse.id : texteLibre !== null ? "libre" : null;
     m.reponseLibre = texteLibre;
-    m.avecQuiReponse = m.avecQui ? (avecQuiReponse || "").trim() : null;
     m.phase = "terminee";
     m.resultat = {
       type: "fait",
@@ -247,15 +270,14 @@
     };
   }
 
-  // Permet à un AUTRE joueur (pas la Cible) de préciser (ou corriger)
-  // avec qui, à n'importe quel moment après la fin de la manche.
+  // Permet à la Cible de corriger le "avec qui" après coup (en cas de
+  // faute de frappe par ex.) — la résolution normale se fait avant même
+  // de répondre, via choisirAvecQui.
   function preciserAvecQui(state, joueurId, texte) {
     const m = state.manche;
     if (!m || m.phase !== "terminee") throw new Error("Pas le moment de préciser ça.");
     if (!m.avecQui) throw new Error("Cette carte ne demande pas de précision.");
-    // C'est l'un des AUTRES joueurs (pas la Cible qui vient d'agir) qui
-    // précise avec qui — la Cible ne se désigne pas elle-même de cible.
-    if (joueurId === m.cibleId) throw new Error("La Cible ne peut pas préciser ça elle-même — c'est à un autre joueur de le faire.");
+    if (joueurId !== m.cibleId) throw new Error("Seule la Cible peut corriger ça.");
     const t = (texte || "").trim().slice(0, 60);
     m.avecQuiReponse = t;
     if (m.resultat) m.resultat.avecQuiReponse = t;
@@ -283,6 +305,7 @@
   return {
     creerPartie,
     demarrerManche,
+    choisirAvecQui,
     soumettreTexteLibre,
     utiliserVeto,
     validerManche,

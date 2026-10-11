@@ -18,7 +18,7 @@
   // Numéro de build affiché en bas de l'écran d'accueil — sert à vérifier
   // qu'un téléphone a bien reçu la dernière version déployée (et pas une
   // copie mise en cache par le navigateur).
-  const VERSION_APP = "2026-10-11-6";
+  const VERSION_APP = "2026-10-11-7";
 
   // Un joueur sur téléphone n'a pas accès à la console développeur : sans
   // ça, une erreur JavaScript est invisible et donne l'impression que "rien
@@ -633,10 +633,13 @@
         Engine.validerDefi(gameState, payload.defiId, !!payload.reussi);
         break;
       case "valider-manche":
-        Engine.validerManche(gameState, payload.reponseId, payload.avecQuiReponse, payload.reponseLibre);
+        Engine.validerManche(gameState, payload.reponseId, payload.reponseLibre);
         break;
       case "manche-suivante":
         Engine.demarrerManche(gameState);
+        break;
+      case "choisir-avec-qui":
+        Engine.choisirAvecQui(gameState, actorId, payload.texte);
         break;
       case "avec-qui":
         Engine.preciserAvecQui(gameState, actorId, payload.texte);
@@ -674,73 +677,6 @@
     Engine.validerDefi(gameState, defiId, reussi);
     if (contexte.role === "hote") diffuser();
     apresMiseAJourEtat();
-  }
-
-  // Précise (ou corrige) le "avec qui" une fois la manche révélée — utilise
-  // le même schéma que validerDefiUI (pas envoyerAction) pour rester sur
-  // l'écran de résultat sans relancer le passage de téléphone du mode local.
-  // C'est à un AUTRE joueur que la Cible de le faire (voir rendreBlocAvecQui).
-  function preciserAvecQuiUI(texte) {
-    if (contexte.role === "invite") {
-      envoyerActionInvite("avec-qui", { texte });
-      return;
-    }
-    // En mode local, le téléphone est posé au milieu du groupe : n'importe
-    // quel joueur présent peut taper, du moment que ce n'est pas la Cible
-    // elle-même — on agit au nom du premier autre joueur de la partie,
-    // l'identité précise n'a pas d'importance pour le moteur.
-    let idActeur = contexte.moiId;
-    if (contexte.role === "local" || !idActeur || idActeur === gameState.manche.cibleId) {
-      const autre = gameState.joueurs.find((j) => j.id !== gameState.manche.cibleId);
-      idActeur = autre ? autre.id : contexte.moiId;
-    }
-    Engine.preciserAvecQui(gameState, idActeur, texte);
-    if (contexte.role === "hote") diffuser();
-    apresMiseAJourEtat();
-  }
-
-  // Affiche, dans la zone réservée du résultat, le champ éditable pour un
-  // AUTRE joueur que la Cible (c'est à lui/elle de préciser avec qui, pas à
-  // la Cible de se désigner elle-même qui elle visait). Verrouillé par
-  // défaut pour que ce soit un geste conscient — "je prends le téléphone
-  // pour préciser" — plutôt qu'immédiatement modifiable par la Cible.
-  let avecQuiDeverrouille = false;
-  let avecQuiDeverrouilleManche = null;
-  function rendreBlocAvecQui(el, m, res) {
-    if (!el) return;
-    // Un nouveau verrou à chaque manche : le déverrouillage d'un tour ne
-    // doit pas rester acquis pour les suivants.
-    if (avecQuiDeverrouilleManche !== m.numero) {
-      avecQuiDeverrouilleManche = m.numero;
-      avecQuiDeverrouille = false;
-    }
-    const jeSuisCible = contexte.role !== "local" && contexte.moiId === m.cibleId;
-
-    if (jeSuisCible) {
-      // La Cible ne peut pas préciser elle-même : lecture seule pour elle.
-      el.innerHTML = `<p><em>Avec qui : ${echapper(res.avecQuiReponse) || "(pas encore précisé par un autre joueur)"}</em></p>`;
-      return;
-    }
-
-    if (!avecQuiDeverrouille && !res.avecQuiReponse) {
-      el.innerHTML = `
-        <button class="btn btn-secondaire" id="btn-deverrouiller-avec-qui">✍️ Un autre joueur précise avec qui</button>`;
-      el.querySelector("#btn-deverrouiller-avec-qui").addEventListener("click", () => {
-        avecQuiDeverrouille = true;
-        rendreBlocAvecQui(el, m, res);
-      });
-      return;
-    }
-
-    const valeurActuelle = echapper(res.avecQuiReponse || "");
-    el.innerHTML = `
-      <div class="reponse-avec-qui">
-        <input id="champ-avec-qui-resultat" class="champ" placeholder="Avec qui ? (facultatif)" maxlength="60" value="${valeurActuelle}" />
-        <button class="btn btn-secondaire" id="btn-valider-avec-qui">✓ Valider</button>
-      </div>`;
-    el.querySelector("#btn-valider-avec-qui").addEventListener("click", () => {
-      preciserAvecQuiUI(el.querySelector("#champ-avec-qui-resultat").value.trim());
-    });
   }
 
   // Rafraîchit ce qui doit l'être après un changement d'état qui n'est
@@ -809,21 +745,32 @@
     const zoneCarte = $("#zone-carte");
     const cible = gameState.joueurs.find((j) => j.id === m.cibleId);
     const enAttenteTexteLibre = m.libre && m.phase === "texte_libre";
+    const enAttenteAvecQui = m.phase === "avec_qui";
     const texteAffiche = enAttenteTexteLibre
       ? "🃏 Carte libre — la Cible invente sa situation…"
       : m.estGage
         ? m.gageTexte
-        : m.carteTexte.replace("{cible}", "…");
+        : enAttenteAvecQui
+          ? m.carteTexte.replace("{cible}", "…")
+          : m.carteTexte;
     zoneCarte.innerHTML = `
       <span class="etiquette-cible">${m.estGage ? "🎁 Gage pour" : "🎯 Cible :"} ${cible.nom}${m.defi ? " · Défi" : ""}</span>
       <p class="texte-situation">${texteAffiche}</p>
-      ${m.avecQui && !enAttenteTexteLibre ? `<span class="avec-qui">Un autre joueur pourra préciser avec qui, une fois la manche terminée.</span>` : ""}
     `;
 
     const zoneAction = $("#zone-action");
     zoneAction.innerHTML = "";
 
     const jeSuisCible = contexte.moiId === m.cibleId;
+
+    if (m.phase === "avec_qui") {
+      if (jeSuisCible) {
+        rendreAvecQui(zoneAction, m);
+      } else {
+        zoneAction.innerHTML = `<div class="zone-attente-cible">🤔 ${cible.nom} précise de qui parle la carte…</div>`;
+      }
+      return;
+    }
 
     if (m.phase === "texte_libre") {
       if (jeSuisCible) {
@@ -868,6 +815,32 @@
         return;
       }
       envoyerAction("texte-libre", { texte });
+    });
+    zone.querySelector("[data-action-locale='veto']").addEventListener("click", () => envoyerAction("veto", {}));
+  }
+
+  // La carte contient {cible} : la Cible précise de qui il s'agit AVANT de
+  // répondre, pour que la carte s'affiche complète ensuite.
+  function rendreAvecQui(zone, m) {
+    const cible = gameState.joueurs.find((j) => j.id === m.cibleId);
+    zone.innerHTML = `
+      <p class="texte-aide">${cible.nom}, avec qui ?</p>
+      <input id="champ-avec-qui" class="champ" placeholder="Prénom…" maxlength="60" />
+      <button class="btn btn-principal" id="btn-valider-avec-qui-avant">Valider</button>
+      <p id="erreur-avec-qui" class="texte-erreur"></p>
+      <div class="actions-secondaires">
+        <button class="btn-veto" data-action-locale="veto" ${cible.vetosRestants <= 0 ? "disabled" : ""}>
+          🙅 Véto (${cible.vetosRestants})
+        </button>
+      </div>
+    `;
+    zone.querySelector("#btn-valider-avec-qui-avant").addEventListener("click", () => {
+      const texte = zone.querySelector("#champ-avec-qui").value.trim();
+      if (!texte) {
+        zone.querySelector("#erreur-avec-qui").textContent = "Dis avec qui avant de continuer.";
+        return;
+      }
+      envoyerAction("choisir-avec-qui", { texte });
     });
     zone.querySelector("[data-action-locale='veto']").addEventListener("click", () => envoyerAction("veto", {}));
   }
@@ -962,7 +935,6 @@
           <p>${cible.nom} : « ${texteAffiche} »</p>
           ${reponse ? `<p class="reponse-situation-choisie">${cible.nom} répond : <strong>${reponse.texte}</strong></p>` : ""}
           ${texteReponseLibre !== null ? `<p class="reponse-situation-choisie">${cible.nom} répond : <strong>${texteReponseLibre}</strong></p>` : ""}
-          ${m.avecQui ? `<div id="bloc-avec-qui"></div>` : ""}
         </div>`;
     }
 
@@ -984,10 +956,6 @@
     zone.innerHTML = html + (peutContinuer
       ? `<button class="btn btn-principal" id="btn-manche-suivante">Manche suivante ➡️</button>`
       : `<div class="zone-attente-cible">En attente de l'hôte pour la suite…</div>`);
-
-    if (m.avecQui && res.type === "fait") {
-      rendreBlocAvecQui(zone.querySelector("#bloc-avec-qui"), m, res);
-    }
 
     if (encoreEnAttente) {
       zone.querySelectorAll("[data-defi-valider]").forEach((b) => {
