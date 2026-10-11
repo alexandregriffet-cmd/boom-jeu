@@ -18,7 +18,7 @@
   // Numéro de build affiché en bas de l'écran d'accueil — sert à vérifier
   // qu'un téléphone a bien reçu la dernière version déployée (et pas une
   // copie mise en cache par le navigateur).
-  const VERSION_APP = "2026-10-11-10";
+  const VERSION_APP = "2026-10-11-11";
 
   // Un joueur sur téléphone n'a pas accès à la console développeur : sans
   // ça, une erreur JavaScript est invisible et donne l'impression que "rien
@@ -493,11 +493,25 @@
       Object.keys(inscriptions).forEach((joueurId) => {
         if (contexte.joueursLocaux.some((j) => j.id === joueurId)) return;
         const info = inscriptions[joueurId] || {};
-        contexte.joueursLocaux.push({
-          id: joueurId,
-          nom: String(info.nom || "Invité").slice(0, 20),
-          distant: true,
-        });
+        const nom = String(info.nom || "Invité").slice(0, 20);
+        // Si le même prénom rejoint une seconde fois avant le lancement de
+        // la partie (page rechargée pendant la salle d'attente, double
+        // appui sur « Rejoindre »…), ça crée une DEUXIÈME inscription avec
+        // un nouvel id — sans ça, on se retrouverait avec un joueur
+        // fantôme en double, et la Cible choisie plus tard pourrait tomber
+        // sur l'ancien id, qu'aucun appareil ne reconnaît plus comme le
+        // sien : partie bloquée. On remplace donc l'ancienne entrée
+        // distante de même prénom par la nouvelle plutôt que d'en ajouter
+        // une troisième.
+        const nomNormalise = nom.trim().toLowerCase();
+        const existant = contexte.joueursLocaux.find(
+          (j) => j.distant && j.nom.trim().toLowerCase() === nomNormalise
+        );
+        if (existant) {
+          existant.id = joueurId;
+        } else {
+          contexte.joueursLocaux.push({ id: joueurId, nom, distant: true });
+        }
         changement = true;
       });
       if (changement) {
@@ -574,7 +588,16 @@
     contexte.role = "invite";
     codeSalonRejoint = code;
     nomInvite = nom;
-    if (!monJoueurId) monJoueurId = genererIdJoueur();
+    if (!monJoueurId) {
+      // Si ce navigateur a déjà rejoint CE salon avant (page rechargée,
+      // bouton « Rejoindre » tapé deux fois…), on reprend le même id
+      // plutôt que d'en générer un nouveau — sinon l'hôte verrait un
+      // second joueur du même nom apparaître, et une Cible déjà choisie
+      // sur l'ancien id resterait bloquée, aucun appareil ne la
+      // reconnaissant plus comme la sienne.
+      const sessionExistante = chargerSession(code, "invite");
+      monJoueurId = (sessionExistante && sessionExistante.monJoueurId) || genererIdJoueur();
+    }
     contexte.moiId = monJoueurId;
     $("#erreur-rejoindre").textContent = "Connexion au salon…";
 
