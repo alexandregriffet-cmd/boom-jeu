@@ -1,0 +1,1233 @@
+/* ============================================================
+   BooM 💥 — Application (interface + orchestration)
+   Fonctionne en trois modes :
+     - local  : un seul téléphone passé de main en main
+     - hote   : salon en ligne, cet appareil héberge la partie
+     - invite : salon en ligne, cet appareil a rejoint via un code
+
+   Le mode en ligne passe par Firebase Realtime Database : tous les
+   téléphones parlent à un serveur central (celui de Google), jamais
+   directement entre eux. C'est ce qui rend la connexion fiable sur
+   n'importe quel réseau (4G, box, opérateurs différents...) — voir
+   firebase-config.js pour la configuration du projet.
+   ============================================================ */
+
+(function () {
+  "use strict";
+
+  // Numéro de build affiché en bas de l'écran d'accueil — sert à vérifier
+  // qu'un téléphone a bien reçu la dernière version déployée (et pas une
+  // copie mise en cache par le navigateur).
+  const VERSION_APP = "2026-10-11-8";
+
+  // Un joueur sur téléphone n'a pas accès à la console développeur : sans
+  // ça, une erreur JavaScript est invisible et donne l'impression que "rien
+  // ne se passe" quand on appuie sur un bouton. On affiche donc toute
+  // erreur non interceptée directement à l'écran, en rouge, en haut.
+  function afficherBanniereErreur(message) {
+    try {
+      let b = document.getElementById("banniere-erreur-js");
+      if (!b) {
+        b = document.createElement("div");
+        b.id = "banniere-erreur-js";
+        b.style.cssText =
+          "position:fixed;top:0;left:0;right:0;z-index:999;background:#c81e4a;color:#fff;" +
+          "padding:10px 14px;font-size:13px;font-family:sans-serif;white-space:pre-wrap;" +
+          "box-shadow:0 2px 8px rgba(0,0,0,.4);";
+        document.body.appendChild(b);
+      }
+      b.textContent = "⚠️ Erreur JS : " + message;
+    } catch (e) {}
+  }
+  window.addEventListener("error", (ev) => {
+    afficherBanniereErreur((ev && ev.message) || "erreur inconnue");
+  });
+  window.addEventListener("unhandledrejection", (ev) => {
+    const raison = ev && ev.reason;
+    afficherBanniereErreur((raison && (raison.message || String(raison))) || "promesse rejetée");
+  });
+
+  const { NIVEAUX, REPONSES_SITUATION } = window.BoomCartes || require("./cartes.js");
+  const Engine = window.BoomEngine;
+
+  // ------------------------------------------------------------
+  // Firebase (salon en ligne)
+  // ------------------------------------------------------------
+  let db = null;
+  try {
+    if (window.firebase && window.FIREBASE_CONFIG && window.FIREBASE_CONFIG.databaseURL) {
+      firebase.initializeApp(window.FIREBASE_CONFIG);
+      db = firebase.database();
+    }
+  } catch (e) {
+    console.error("Firebase non initialisé", e);
+    db = null;
+  }
+
+  // ------------------------------------------------------------
+  // État de l'application
+  // ------------------------------------------------------------
+  const contexte = {
+    role: null,          // 'local' | 'hote' | 'invite'
+    moiId: null,          // id du joueur qui tient l'appareil
+    niveauxChoisis: NIVEAUX.map((n) => n.id),
+    vetosParJoueur: 2,
+    nbManches: 15,
+    joueursLocaux: [],    // construction de la liste avant démarrage (local & hôte)
+  };
+
+  let gameState = null;   // état du moteur (autorité locale ou hôte)
+  let codeSalon = null;         // hôte : code du salon qu'il héberge
+  let codeSalonRejoint = null;  // invité : code du salon rejoint
+  let nomInvite = null;         // invité : prénom saisi
+  let refSalon = null;          // référence Firebase vers /salons/<code>
+  let monJoueurId = null;       // identifiant de joueur permanent (hôte ou invité)
+  let ecouteursActifs = [];     // listeners Firebase actifs, à détacher au reset
+
+  let apresTransfert = null; // callback en attente sur l'écran de transfert
+
+  function genererIdJoueur() {
+    return "j" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+  }
+
+  function ecouter(ref, event, cb) {
+    ref.on(event, cb);
+    ecouteursActifs.push({ ref, event, cb });
+  }
+  function detacherEcouteurs() {
+    ecouteursActifs.forEach(({ ref, event, cb }) => { try { ref.off(event, cb); } catch (e) {} });
+    ecouteursActifs = [];
+  }
+
+  // Realtime Database ne sait pas stocker un tableau ou un objet vide : la
+  // clé disparaît purement et simplement (elle revient "undefined" à la
+  // lecture, même si côté hôte c'était bien "[]" ou "{}"). Sans ce
+  // correctif, un joueur invité qui reçoit un état de partie tout frais
+  // (aucun défi en attente, aucun pari déposé…) plante au premier accès à
+  // l'une de ces collections. On restaure les valeurs par défaut ici,
+  // juste après réception, avant tout rendu.
+  function normaliserEtat(etat) {
+    if (!etat) return etat;
+    if (!etat.defisEnAttente) etat.defisEnAttente = [];
+    if (!etat.cartesUtilisees) etat.cartesUtilisees = [];
+    if (!etat.historique) etat.historique = [];
+    if (!etat.commentaires) etat.commentaires = [];
+    return etat;
+  }
+
+  // ------------------------------------------------------------
+  // Session en ligne persistante — le salon Firebase lui-même n'expire
+  // jamais tout seul (aucune limite de temps côté serveur). Le seul risque
+  // de "code périmé" vient de l'onglet qui recharge la page (mise en
+  // veille prolongée, appli relancée…), ce qui efface la mémoire de
+  // l'appli. On garde donc le code + l'identité du joueur dans le
+  // stockage de CET onglet (sessionStorage, pas localStorage), pour se
+  // rebrancher automatiquement sur le même salon au rechargement — et
+  // pour que deux onglets ouverts en même temps sur deux salons différents
+  // ne se marchent pas dessus : chaque onglet a son propre stockage, donc
+  // on peut héberger/rejoindre plusieurs parties en parallèle sans qu'un
+  // onglet n'efface le code de l'autre.
+  // ------------------------------------------------------------
+  const CLE_SESSION = "boom_session_v1";
+
+  function sauvegarderSession(donnees) {
+    try {
+      sessionStorage.setItem(CLE_SESSION, JSON.stringify({ ...donnees, ts: Date.now() }));
+    } catch (e) {}
+  }
+  function chargerSession() {
+    try {
+      const brut = sessionStorage.getItem(CLE_SESSION);
+      return brut ? JSON.parse(brut) : null;
+    } catch (e) {
+      return null;
+    }
+  }
+  function effacerSession() {
+    try { sessionStorage.removeItem(CLE_SESSION); } catch (e) {}
+  }
+
+  // ------------------------------------------------------------
+  // Utilitaires DOM
+  // ------------------------------------------------------------
+  const $ = (sel) => document.querySelector(sel);
+  const $$ = (sel) => Array.from(document.querySelectorAll(sel));
+
+  function afficherEcran(id) {
+    $$(".ecran").forEach((e) => e.classList.remove("actif"));
+    const cible = document.getElementById(id);
+    if (cible) cible.classList.add("actif");
+  }
+
+  const elVersion = document.getElementById("version-app");
+  if (elVersion) elVersion.textContent = "v" + VERSION_APP;
+
+  function couleurNiveau(id) {
+    return getComputedStyle(document.documentElement).getPropertyValue(`--niveau-${id}`).trim();
+  }
+
+  function nomJoueur(id) {
+    if (!gameState) return "—";
+    const j = gameState.joueurs.find((j) => j.id === id);
+    return j ? j.nom : "—";
+  }
+
+  // ------------------------------------------------------------
+  // Écran d'accueil
+  // ------------------------------------------------------------
+  document.addEventListener("click", (ev) => {
+    const btn = ev.target.closest("[data-action]");
+    if (!btn) return;
+    const action = btn.dataset.action;
+    const gestionnaires = {
+      "mode-local": () => demarrerConfiguration("local"),
+      "mode-hote": () => demarrerConfiguration("hote"),
+      "mode-invite": () => afficherEcran("ecran-rejoindre"),
+      "retour-accueil": () => { reinitialiser(); afficherEcran("ecran-accueil"); },
+      "voir-regles": () => $("#modale-regles").classList.add("ouverte"),
+      "fermer-regles": () => $("#modale-regles").classList.remove("ouverte"),
+      "rejoindre-salon": rejoindreSalon,
+      "ajouter-joueur": ajouterJoueurLocal,
+      "demarrer-partie": demarrerPartie,
+      "transfert-pret": () => { if (apresTransfert) { const cb = apresTransfert; apresTransfert = null; cb(); } },
+      "ouvrir-defis": () => { remplirModaleDefis(); $("#modale-defis").classList.add("ouverte"); },
+      "fermer-defis": () => $("#modale-defis").classList.remove("ouverte"),
+      "ouvrir-chat": () => { rendreChat($("#chat-corps")); $("#modale-chat").classList.add("ouverte"); },
+      "fermer-chat": () => $("#modale-chat").classList.remove("ouverte"),
+      "resync-invite": forcerRafraichissementInvite,
+    };
+    if (gestionnaires[action]) gestionnaires[action]();
+  });
+
+  document.addEventListener("click", (ev) => {
+    const veto = ev.target.closest("[data-veto-delta]");
+    if (veto) {
+      const sel = $("#selecteur-vetos");
+      let v = parseInt(sel.dataset.valeur, 10) + parseInt(veto.dataset.vetoDelta, 10);
+      v = Math.max(0, Math.min(5, v));
+      sel.dataset.valeur = v;
+      $("#valeur-vetos").textContent = v;
+      contexte.vetosParJoueur = v;
+    }
+    const manches = ev.target.closest("[data-manches-delta]");
+    if (manches) {
+      const sel = $("#selecteur-manches");
+      let v = parseInt(sel.dataset.valeur, 10) + parseInt(manches.dataset.manchesDelta, 10);
+      v = Math.max(5, Math.min(50, v));
+      sel.dataset.valeur = v;
+      $("#valeur-manches").textContent = v;
+      contexte.nbManches = v;
+    }
+  });
+
+  // Petit indicateur de connexion internet (Firebase expose cette
+  // référence spéciale ; elle se met à jour automatiquement, y compris
+  // après une coupure/reprise réseau ou une mise en veille du téléphone).
+  if (db) {
+    db.ref(".info/connected").on("value", (snap) => {
+      const connecte = snap.val() === true;
+      if (contexte.role === "invite" && document.getElementById("ecran-attente").classList.contains("actif")) {
+        $("#statut-connexion").textContent = connecte
+          ? "Connecté ! En attente du lancement par l'hôte…"
+          : "Connexion internet perdue… reconnexion automatique en cours.";
+      }
+    });
+  }
+
+  function reinitialiser() {
+    contexte.role = null;
+    contexte.moiId = null;
+    contexte.joueursLocaux = [];
+    gameState = null;
+    detacherEcouteurs();
+    if (codeSalon && db) {
+      // On était l'hôte : on nettoie le salon pour ne rien laisser traîner.
+      try { db.ref("salons/" + codeSalon).remove(); } catch (e) {}
+    }
+    refSalon = null;
+    codeSalon = null;
+    codeSalonRejoint = null;
+    nomInvite = null;
+    monJoueurId = null;
+    effacerSession();
+  }
+
+  // ------------------------------------------------------------
+  // Écran de configuration (local + hôte)
+  // ------------------------------------------------------------
+  function demarrerConfiguration(role) {
+    contexte.role = role;
+    contexte.joueursLocaux = [];
+    $("#erreur-config").textContent = "";
+    $("#liste-joueurs").innerHTML = "";
+
+    // Niveaux
+    const zone = $("#choix-niveaux");
+    zone.innerHTML = "";
+    NIVEAUX.forEach((n) => {
+      const div = document.createElement("div");
+      div.className = "niveau-case selectionne";
+      div.style.background = n.couleur;
+      div.textContent = n.nom;
+      div.dataset.niveau = n.id;
+      div.addEventListener("click", () => {
+        div.classList.toggle("selectionne");
+        contexte.niveauxChoisis = $$(".niveau-case.selectionne").map((d) => d.dataset.niveau);
+      });
+      zone.appendChild(div);
+    });
+    contexte.niveauxChoisis = NIVEAUX.map((n) => n.id);
+
+    $("#selecteur-vetos").dataset.valeur = 2;
+    $("#valeur-vetos").textContent = 2;
+    contexte.vetosParJoueur = 2;
+
+    $("#selecteur-manches").dataset.valeur = 15;
+    $("#valeur-manches").textContent = 15;
+    contexte.nbManches = 15;
+
+    $("#bloc-code-salon").style.display = role === "hote" ? "block" : "none";
+    $("#aide-joueurs").textContent =
+      role === "hote"
+        ? "Ajoute-toi en premier, puis attends que les autres rejoignent avec le code."
+        : "Ajoute chaque joueur avec son prénom.";
+
+    afficherEcran("ecran-config");
+  }
+
+  function ajouterJoueurLocal() {
+    const champ = $("#champ-prenom-joueur");
+    const nom = champ.value.trim();
+    $("#erreur-config").textContent = "";
+    if (!nom) { $("#erreur-config").textContent = "Donne un prénom."; return; }
+    const id = `l${Date.now()}${Math.floor(Math.random() * 1000)}`;
+    contexte.joueursLocaux.push({ id, nom });
+    champ.value = "";
+    redessinerListeJoueurs();
+
+    if (contexte.role === "hote" && contexte.joueursLocaux.length === 1) {
+      // L'hôte vient de s'ajouter : on ouvre le salon en ligne
+      ouvrirSalonReseau();
+    }
+  }
+
+  function redessinerListeJoueurs() {
+    const zone = $("#liste-joueurs");
+    zone.innerHTML = "";
+    contexte.joueursLocaux.forEach((j, i) => {
+      const ligne = document.createElement("div");
+      ligne.className = "ligne-joueur";
+      const retirable = !(contexte.role === "hote" && j.distant);
+      ligne.innerHTML = `
+        <span>${j.nom}</span>
+        ${retirable ? `<button class="btn-retirer" data-retirer="${i}">✕</button>` : `<span class="texte-aide">en ligne</span>`}
+      `;
+      zone.appendChild(ligne);
+    });
+    zone.querySelectorAll("[data-retirer]").forEach((b) => {
+      b.addEventListener("click", () => {
+        contexte.joueursLocaux.splice(parseInt(b.dataset.retirer, 10), 1);
+        redessinerListeJoueurs();
+      });
+    });
+    if (contexte.role === "hote" && contexte.joueursLocaux.length >= 1) {
+      $("#ajout-joueur-local").style.display = "none";
+    }
+  }
+
+  function demarrerPartie() {
+    $("#erreur-config").textContent = "";
+    if (contexte.joueursLocaux.length < 2) {
+      $("#erreur-config").textContent = "Il faut au moins 2 joueurs pour commencer.";
+      return;
+    }
+    if (contexte.niveauxChoisis.length === 0) {
+      $("#erreur-config").textContent = "Choisis au moins un niveau de cartes.";
+      return;
+    }
+    const config = {
+      niveauxActifs: contexte.niveauxChoisis,
+      vetosParJoueur: contexte.vetosParJoueur,
+      nbToursTotal: contexte.nbManches,
+    };
+    gameState = Engine.creerPartie(contexte.joueursLocaux, config);
+
+    if (contexte.role === "local") {
+      contexte.moiId = null;
+      demarrerMancheEtTransferer();
+    } else if (contexte.role === "hote") {
+      contexte.moiId = contexte.joueursLocaux[0].id;
+      Engine.demarrerManche(gameState);
+      if (refSalon) refSalon.child("demarree").set(true);
+      diffuser();
+      afficherEcran("ecran-jeu");
+      actualiserEcranJeu();
+    }
+  }
+
+  // ------------------------------------------------------------
+  // Salon en ligne — hôte
+  // ------------------------------------------------------------
+  function genererCode() {
+    const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ";
+    let code = "";
+    for (let i = 0; i < 4; i++) code += alphabet[Math.floor(Math.random() * alphabet.length)];
+    return code;
+  }
+
+  function ouvrirSalonReseau() {
+    if (!db) {
+      $("#statut-salon").textContent = "Connexion en ligne indisponible (configuration manquante).";
+      return;
+    }
+    codeSalon = genererCode();
+    monJoueurId = contexte.joueursLocaux[0].id;
+    $("#affichage-code").textContent = codeSalon;
+    $("#statut-salon").textContent = "Ouverture du salon…";
+
+    refSalon = db.ref("salons/" + codeSalon);
+    refSalon
+      .set({ cree: firebase.database.ServerValue.TIMESTAMP, lobby: { joueurs: [] }, demarree: false })
+      .then(() => {
+        $("#statut-salon").textContent = "✅ Salon prêt — donne ce code aux autres joueurs. Il reste valable toute la journée, quel que soit le temps que ça prend pour rejoindre.";
+        $("#erreur-config").textContent = "";
+        sauvegarderSession({ role: "hote", codeSalon, monJoueurId });
+      })
+      .catch((e) => {
+        console.error("Erreur Firebase (création du salon)", e);
+        $("#statut-salon").textContent = "Impossible de créer le salon (vérifie ta connexion internet).";
+      });
+
+    attacherEcouteursHote();
+  }
+
+  // Écouteurs propres à l'hôte : inscriptions des invités + actions reçues
+  // pendant la partie. Isolé dans sa propre fonction pour pouvoir être
+  // rebranché tel quel après une reprise de salon (voir tenterReprendreHote).
+  function attacherEcouteursHote() {
+    // Un invité écrit sa propre inscription ; on l'ajoute au lobby local
+    // dès qu'elle apparaît (une reconnexion réécrit la même entrée, donc
+    // pas de doublon possible). Ce nœud n'est jamais supprimé côté Firebase
+    // tant que l'hôte ne ferme pas le salon lui-même : un invité peut donc
+    // rejoindre à n'importe quel moment de la journée, sans limite de temps.
+    ecouter(refSalon.child("inscriptions"), "value", (snap) => {
+      if (gameState) return; // partie déjà lancée : plus de nouvelles entrées
+      const inscriptions = snap.val() || {};
+      let changement = false;
+      Object.keys(inscriptions).forEach((joueurId) => {
+        if (contexte.joueursLocaux.some((j) => j.id === joueurId)) return;
+        const info = inscriptions[joueurId] || {};
+        contexte.joueursLocaux.push({
+          id: joueurId,
+          nom: String(info.nom || "Invité").slice(0, 20),
+          distant: true,
+        });
+        changement = true;
+      });
+      if (changement) {
+        redessinerListeJoueurs();
+        diffuserLobby();
+      }
+    });
+
+    // Actions envoyées par les invités pendant la partie.
+    ecouter(refSalon.child("actions"), "child_added", (snap) => {
+      const msg = snap.val();
+      snap.ref.remove().catch(() => {});
+      if (!msg) return;
+      if (!gameState) {
+        if (msg.joueurId) signalerErreurInvite(msg.joueurId, "La partie n'a pas encore démarré côté hôte.");
+        return;
+      }
+      try {
+        appliquerAction(msg.type, msg.payload || {}, msg.joueurId);
+        diffuser();
+        apresMiseAJourEtat();
+      } catch (e) {
+        console.error("Action invalide reçue de " + msg.joueurId, e);
+        if (msg.joueurId) signalerErreurInvite(msg.joueurId, e.message);
+      }
+    });
+  }
+
+  function diffuserLobby() {
+    if (!refSalon) return;
+    const liste = contexte.joueursLocaux.map((j) => ({ nom: j.nom }));
+    refSalon.child("lobby").set({ joueurs: liste }).catch((e) => console.error("Échec d'envoi du lobby", e));
+  }
+
+  // Un invité dont l'action a été refusée par l'hôte (mauvais tour, id
+  // inconnu…) ne voit sinon rien du tout se passer — on lui remonte le
+  // vrai message d'erreur plutôt que de le laisser taper dans le vide.
+  function signalerErreurInvite(joueurId, message) {
+    if (!refSalon) return;
+    refSalon
+      .child("erreurs/" + joueurId)
+      .set({ message, ts: firebase.database.ServerValue.TIMESTAMP })
+      .catch(() => {});
+  }
+
+  function diffuser() {
+    if (!refSalon) return;
+    // gameState contient un champ "rng" (une fonction, pour le tirage
+    // aléatoire des cartes) que Firebase refuse de stocker — contrairement
+    // à l'ancien transport PeerJS, il ne l'ignore pas silencieusement, il
+    // lève une erreur. Un aller-retour JSON élimine proprement toute
+    // fonction (et toute valeur "undefined") avant l'envoi.
+    let etatSerialisable;
+    try {
+      etatSerialisable = JSON.parse(JSON.stringify(gameState));
+    } catch (e) {
+      console.error("État de partie non sérialisable", e);
+      return;
+    }
+    refSalon.child("etat").set(etatSerialisable).catch((e) => console.error("Échec d'envoi de l'état", e));
+  }
+
+  // ------------------------------------------------------------
+  // Salon en ligne — invité
+  // ------------------------------------------------------------
+  function rejoindreSalon() {
+    const code = $("#champ-code-salon").value.trim().toUpperCase();
+    const nom = $("#champ-prenom-invite").value.trim();
+    $("#erreur-rejoindre").textContent = "";
+    if (code.length !== 4) { $("#erreur-rejoindre").textContent = "Le code fait 4 lettres."; return; }
+    if (!nom) { $("#erreur-rejoindre").textContent = "Donne ton prénom."; return; }
+    if (!db) { $("#erreur-rejoindre").textContent = "Connexion en ligne indisponible (configuration manquante)."; return; }
+
+    contexte.role = "invite";
+    codeSalonRejoint = code;
+    nomInvite = nom;
+    if (!monJoueurId) monJoueurId = genererIdJoueur();
+    contexte.moiId = monJoueurId;
+    $("#erreur-rejoindre").textContent = "Connexion au salon…";
+
+    const cible = db.ref("salons/" + code);
+    cible
+      .get()
+      .then((snap) => {
+        if (!snap.exists()) {
+          $("#erreur-rejoindre").textContent = "Salon introuvable. Vérifie le code.";
+          return;
+        }
+        refSalon = cible;
+        return refSalon.child("inscriptions/" + monJoueurId).set({ nom: nomInvite });
+      })
+      .then(() => {
+        if (!refSalon) return; // le salon n'existait pas, déjà signalé plus haut
+        sauvegarderSession({ role: "invite", codeSalonRejoint: code, monJoueurId, nomInvite });
+        afficherEcran("ecran-attente");
+        $("#statut-connexion").textContent = "Connecté ! En attente du lancement par l'hôte…";
+        ecouterSalonInvite();
+      })
+      .catch((e) => {
+        console.error("Erreur Firebase (rejoindre le salon)", e);
+        $("#erreur-rejoindre").textContent = "Connexion en ligne indisponible. Vérifie ta connexion internet.";
+      });
+  }
+
+  function ecouterSalonInvite() {
+    ecouter(refSalon.child("lobby"), "value", (snap) => {
+      if (gameState) return; // la partie est lancée, le lobby ne sert plus
+      const val = snap.val();
+      if (!val) return;
+      const zone = $("#liste-joueurs-attente");
+      zone.innerHTML = "";
+      (val.joueurs || []).forEach((j) => {
+        const ligne = document.createElement("div");
+        ligne.className = "ligne-joueur";
+        ligne.innerHTML = `<span>${j.nom}</span>`;
+        zone.appendChild(ligne);
+      });
+    });
+
+    ecouter(refSalon.child("etat"), "value", (snap) => {
+      try {
+      const val = snap.val();
+      if (!val) return;
+      gameState = normaliserEtat(val);
+      if (gameState.terminee) {
+        const ecranActif = document.querySelector(".ecran.actif");
+        if (ecranActif && ecranActif.id === "ecran-fin") {
+          apresMiseAJourEtat();
+        } else {
+          afficherFin();
+        }
+      } else {
+        afficherEcran("ecran-jeu");
+        actualiserEcranJeu();
+        rafraichirModalesOuvertes();
+      }
+      } catch (e) {
+        console.error("Erreur au rendu de l'état reçu", e);
+        afficherBanniereErreur(e.message || String(e));
+      }
+    });
+
+    // Une action refusée par l'hôte (mauvais tour, état désynchronisé…)
+    // sinon ne se voit jamais côté invité : l'écran reste figé sans
+    // explication. On affiche le vrai message ici.
+    ecouter(refSalon.child("erreurs/" + monJoueurId), "value", (snap) => {
+      const val = snap.val();
+      if (!val) return;
+      const zone = $("#zone-action");
+      if (zone) {
+        zone.innerHTML = `<div class="texte-erreur">⚠️ ${val.message}</div><p class="texte-aide">On resynchronise automatiquement dans un instant…</p>`;
+      }
+      refSalon.child("erreurs/" + monJoueurId).remove().catch(() => {});
+      // Le prochain "etat" venant de l'hôte remettra l'écran à jour ; en
+      // attendant, on redemande l'état actuel pour ne pas rester bloqué
+      // sur ce message si l'hôte ne rediffuse pas de lui-même.
+      forcerRafraichissementInvite();
+    });
+  }
+
+  function envoyerActionInvite(type, payload) {
+    if (!refSalon) return;
+    const zone = $("#zone-action");
+    if (zone) zone.innerHTML = `<div class="zone-attente-cible">Envoi…</div>`;
+    refSalon
+      .child("actions")
+      .push({ type, payload: payload || {}, joueurId: monJoueurId, ts: firebase.database.ServerValue.TIMESTAMP })
+      .catch((e) => {
+        console.error("Échec d'envoi de l'action", e);
+        if (zone) {
+          zone.innerHTML = `<div class="texte-erreur">⚠️ Échec de l'envoi (${e.message || "erreur réseau"}). Vérifie ta connexion et réessaie.</div>`;
+        }
+      });
+  }
+
+  // Bouton « Réessayer » de la salle d'attente : Firebase se
+  // resynchronise déjà tout seul (les écouteurs .on("value") reçoivent
+  // automatiquement la dernière valeur dès que la connexion revient),
+  // donc ce bouton sert surtout de filet de sécurité visuel.
+  function forcerRafraichissementInvite() {
+    if (!refSalon) return;
+    $("#statut-connexion").textContent = "Vérification…";
+    refSalon
+      .child("etat")
+      .get()
+      .then((snap) => {
+        const val = snap.val();
+        if (val) {
+          gameState = normaliserEtat(val);
+          if (gameState.terminee) afficherFin();
+          else { afficherEcran("ecran-jeu"); actualiserEcranJeu(); }
+        } else {
+          $("#statut-connexion").textContent = "En attente du lancement par l'hôte…";
+        }
+      })
+      .catch(() => {
+        $("#statut-connexion").textContent = "Toujours hors-ligne. Vérifie ta connexion internet.";
+      });
+  }
+
+  // ------------------------------------------------------------
+  // Application des actions sur le moteur (local & hôte)
+  // ------------------------------------------------------------
+  function appliquerAction(type, payload, actorId) {
+    switch (type) {
+      case "texte-libre":
+        Engine.soumettreTexteLibre(gameState, actorId, payload.texte);
+        break;
+      case "veto":
+        Engine.utiliserVeto(gameState, actorId);
+        break;
+      case "valider-defi":
+        Engine.validerDefi(gameState, payload.defiId, !!payload.reussi);
+        break;
+      case "valider-manche":
+        Engine.validerManche(gameState, payload.reponseId, payload.reponseLibre);
+        break;
+      case "manche-suivante":
+        Engine.demarrerManche(gameState);
+        break;
+      case "choisir-avec-qui":
+        Engine.choisirAvecQui(gameState, actorId, payload.texte);
+        break;
+      case "avec-qui":
+        Engine.preciserAvecQui(gameState, actorId, payload.texte);
+        break;
+      case "commentaire":
+        Engine.ajouterCommentaire(gameState, actorId, payload.texte);
+        break;
+      default:
+        throw new Error("Action inconnue : " + type);
+    }
+  }
+
+  function envoyerAction(type, payload) {
+    if (contexte.role === "invite") {
+      envoyerActionInvite(type, payload);
+      return;
+    }
+    appliquerAction(type, payload, contexte.moiId);
+    if (contexte.role === "hote") diffuser();
+    if (contexte.role === "local") {
+      local_avancer();
+    } else {
+      actualiserEcranJeu();
+    }
+  }
+
+  // Validation d'un défi (fait / pas fait) : accessible à tout moment,
+  // par n'importe quel joueur présent — ça ne fait pas partie du tour
+  // secret en cours, donc ça ne passe jamais par les écrans de transfert.
+  function validerDefiUI(defiId, reussi) {
+    if (contexte.role === "invite") {
+      envoyerActionInvite("valider-defi", { defiId, reussi });
+      return;
+    }
+    Engine.validerDefi(gameState, defiId, reussi);
+    if (contexte.role === "hote") diffuser();
+    apresMiseAJourEtat();
+  }
+
+  // Rafraîchit ce qui doit l'être après un changement d'état qui n'est
+  // pas forcément lié au tour en cours (ex : validation d'un défi).
+  function apresMiseAJourEtat() {
+    actualiserBarreDefis();
+    rafraichirModalesOuvertes();
+    const ecran = document.querySelector(".ecran.actif");
+    const id = ecran ? ecran.id : null;
+    if (id === "ecran-jeu") {
+      actualiserEcranJeu();
+    } else if (id === "ecran-fin") {
+      rendreFinEcran();
+    }
+  }
+
+  // ------------------------------------------------------------
+  // Orchestration du mode local (pass-and-play)
+  // ------------------------------------------------------------
+  // Depuis la simplification des règles, il n'y a plus rien à cacher aux
+  // autres joueurs (ni pari, ni réaction secrète) : le téléphone reste
+  // posé au milieu du groupe, la Cible répond/agit devant tout le monde.
+  function demarrerMancheEtTransferer() {
+    const m = Engine.demarrerManche(gameState);
+    if (!m) { afficherFin(); return; }
+    contexte.moiId = m.cibleId;
+    afficherEcran("ecran-jeu");
+    actualiserEcranJeu();
+  }
+
+  function local_avancer() {
+    const m = gameState.manche;
+    if (!m) { demarrerMancheEtTransferer(); return; }
+    contexte.moiId = m.cibleId;
+    afficherEcran("ecran-jeu");
+    actualiserEcranJeu();
+  }
+
+  // ------------------------------------------------------------
+  // Rendu de l'écran de jeu (commun local / hôte / invité)
+  // ------------------------------------------------------------
+  function actualiserEcranJeu() {
+    if (!gameState) return;
+    const m = gameState.manche;
+    if (!m && gameState.terminee) { afficherFin(); return; }
+    if (!m) return;
+
+    $("#compteur-manche").textContent = `Manche ${m.numero}`;
+    const badge = $("#badge-niveau");
+    badge.textContent = NIVEAUX.find((n) => n.id === m.niveau).nom;
+    badge.style.background = couleurNiveau(m.niveau);
+
+    actualiserBarreDefis();
+
+    // Liste des joueurs (plus de score : juste un rappel de qui joue)
+    const tableau = $("#tableau-scores");
+    tableau.innerHTML = "";
+    gameState.joueurs.forEach((j) => {
+      const chip = document.createElement("div");
+      chip.className = "score-chip" + (j.id === m.cibleId ? " est-cible" : "");
+      chip.innerHTML = `<span class="nom">${j.nom}${j.id === m.cibleId ? " 🎯" : ""}</span>`;
+      tableau.appendChild(chip);
+    });
+
+    // Carte (ou gage, s'il en est sorti un à la place)
+    const zoneCarte = $("#zone-carte");
+    const cible = gameState.joueurs.find((j) => j.id === m.cibleId);
+    const enAttenteTexteLibre = m.libre && m.phase === "texte_libre";
+    const enAttenteAvecQui = m.phase === "avec_qui";
+    const texteAffiche = enAttenteTexteLibre
+      ? "🃏 Carte libre — la Cible invente sa situation…"
+      : m.estGage
+        ? m.gageTexte
+        : enAttenteAvecQui
+          ? m.carteTexte.replace("{cible}", "…")
+          : m.carteTexte;
+    zoneCarte.innerHTML = `
+      <span class="etiquette-cible">${m.estGage ? "🎁 Gage pour" : "🎯 Cible :"} ${cible.nom}${m.defi ? " · Défi" : ""}</span>
+      <p class="texte-situation">${texteAffiche}</p>
+    `;
+
+    const zoneAction = $("#zone-action");
+    zoneAction.innerHTML = "";
+
+    const jeSuisCible = contexte.moiId === m.cibleId;
+
+    if (m.phase === "avec_qui") {
+      if (jeSuisCible) {
+        rendreAvecQui(zoneAction, m);
+      } else {
+        zoneAction.innerHTML = `<div class="zone-attente-cible">🤔 ${cible.nom} précise de qui parle la carte…</div>`;
+      }
+      return;
+    }
+
+    if (m.phase === "texte_libre") {
+      if (jeSuisCible) {
+        rendreTexteLibre(zoneAction, m);
+      } else {
+        zoneAction.innerHTML = `<div class="zone-attente-cible">✍️ ${cible.nom} invente la situation, sans filtre…</div>`;
+      }
+      return;
+    }
+
+    if (m.phase === "en_cours") {
+      if (jeSuisCible) {
+        rendreEnCours(zoneAction, m, cible);
+      } else {
+        zoneAction.innerHTML = `<div class="zone-attente-cible">👀 ${cible.nom} répond ou agit, sans mise ni pari — juste la vraie réponse…</div>`;
+      }
+      return;
+    }
+
+    if (m.phase === "terminee") {
+      rendreResultat(zoneAction, m, cible);
+    }
+  }
+
+  function rendreTexteLibre(zone, m) {
+    const cible = gameState.joueurs.find((j) => j.id === m.cibleId);
+    zone.innerHTML = `
+      <p class="texte-aide">Carte libre : invente ta situation, sans aucun filtre.</p>
+      <textarea id="champ-texte-libre" class="champ" rows="3" maxlength="220" placeholder="Écris ta situation ou ton action…"></textarea>
+      <button class="btn btn-principal" id="btn-valider-texte-libre">Valider ma situation</button>
+      <p id="erreur-texte-libre" class="texte-erreur"></p>
+      <div class="actions-secondaires">
+        <button class="btn-veto" data-action-locale="veto" ${cible.vetosRestants <= 0 ? "disabled" : ""}>
+          🙅 Véto (${cible.vetosRestants})
+        </button>
+      </div>
+    `;
+    zone.querySelector("#btn-valider-texte-libre").addEventListener("click", () => {
+      const texte = zone.querySelector("#champ-texte-libre").value.trim();
+      if (!texte) {
+        zone.querySelector("#erreur-texte-libre").textContent = "Écris quelque chose avant de valider.";
+        return;
+      }
+      envoyerAction("texte-libre", { texte });
+    });
+    zone.querySelector("[data-action-locale='veto']").addEventListener("click", () => envoyerAction("veto", {}));
+  }
+
+  // La carte contient {cible} : la Cible précise de qui il s'agit AVANT de
+  // répondre, pour que la carte s'affiche complète ensuite.
+  function rendreAvecQui(zone, m) {
+    const cible = gameState.joueurs.find((j) => j.id === m.cibleId);
+    zone.innerHTML = `
+      <p class="texte-aide">${cible.nom}, avec qui ?</p>
+      <input id="champ-avec-qui" class="champ" placeholder="Prénom…" maxlength="60" />
+      <button class="btn btn-principal" id="btn-valider-avec-qui-avant">Valider</button>
+      <p id="erreur-avec-qui" class="texte-erreur"></p>
+      <div class="actions-secondaires">
+        <button class="btn-veto" data-action-locale="veto" ${cible.vetosRestants <= 0 ? "disabled" : ""}>
+          🙅 Véto (${cible.vetosRestants})
+        </button>
+      </div>
+    `;
+    zone.querySelector("#btn-valider-avec-qui-avant").addEventListener("click", () => {
+      const texte = zone.querySelector("#champ-avec-qui").value.trim();
+      if (!texte) {
+        zone.querySelector("#erreur-avec-qui").textContent = "Dis avec qui avant de continuer.";
+        return;
+      }
+      envoyerAction("choisir-avec-qui", { texte });
+    });
+    zone.querySelector("[data-action-locale='veto']").addEventListener("click", () => envoyerAction("veto", {}));
+  }
+
+  // Plus de pari ni de réaction secrète. Sur une carte Défi ou un gage,
+  // la Cible valide juste "c'est fait" (une vraie action à réaliser).
+  // Sur une carte situation classique, elle choisit une des 5 réponses
+  // honnêtes — personne ne devine, elle dit juste la vérité. Le Véto
+  // reste disponible dans les deux cas pour passer la manche.
+  function rendreEnCours(zone, m, cible) {
+    const demandeReponse = !m.defi && !m.estGage;
+
+    if (demandeReponse) {
+      zone.innerHTML = `
+        <p class="texte-aide">${cible.nom}, ta réponse, sans filtre :</p>
+        <div class="grille-reponses-situation" id="grille-reponses-situation"></div>
+        <div id="bloc-reponse-libre"></div>
+        <div class="actions-secondaires">
+          <button class="btn-veto" data-action-locale="veto" ${cible.vetosRestants <= 0 ? "disabled" : ""}>
+            🙅 Véto (${cible.vetosRestants})
+          </button>
+        </div>
+      `;
+      const grille = zone.querySelector("#grille-reponses-situation");
+      REPONSES_SITUATION.forEach((r) => {
+        const b = document.createElement("button");
+        b.className = "btn-reponse-situation";
+        b.textContent = r.texte;
+        b.addEventListener("click", () => envoyerAction("valider-manche", { reponseId: r.id }));
+        grille.appendChild(b);
+      });
+
+      // Réponse libre : un 6e choix qui ouvre un petit champ texte au lieu
+      // d'envoyer tout de suite, pour que la Cible puisse écrire sa propre
+      // réponse plutôt que de choisir l'une des 5 proposées.
+      const blocLibre = zone.querySelector("#bloc-reponse-libre");
+      const btnLibre = document.createElement("button");
+      btnLibre.className = "btn-reponse-situation btn-reponse-libre";
+      btnLibre.textContent = "✍️ Autre (réponse libre)";
+      btnLibre.addEventListener("click", () => {
+        blocLibre.innerHTML = `
+          <div class="reponse-libre-champ">
+            <input id="champ-reponse-libre" class="champ" placeholder="Ta réponse, en quelques mots…" maxlength="140" />
+            <button class="btn btn-secondaire" id="btn-valider-reponse-libre">✓ Valider</button>
+          </div>
+          <p id="erreur-reponse-libre" class="texte-erreur"></p>
+        `;
+        blocLibre.querySelector("#champ-reponse-libre").focus();
+        blocLibre.querySelector("#btn-valider-reponse-libre").addEventListener("click", () => {
+          const texte = blocLibre.querySelector("#champ-reponse-libre").value.trim();
+          if (!texte) {
+            blocLibre.querySelector("#erreur-reponse-libre").textContent = "Écris quelque chose avant de valider.";
+            return;
+          }
+          envoyerAction("valider-manche", { reponseId: "libre", reponseLibre: texte });
+        });
+      });
+      grille.appendChild(btnLibre);
+
+      zone.querySelector("[data-action-locale='veto']").addEventListener("click", () => envoyerAction("veto", {}));
+      return;
+    }
+
+    zone.innerHTML = `
+      <p class="texte-aide">${m.estGage ? `${cible.nom}, un gage est tombé pour toi !` : `${cible.nom}, à toi de répondre ou d'agir, sans filtre.`}</p>
+      <button class="btn btn-principal" id="btn-valider-manche">✅ C'est fait, carte suivante</button>
+      <div class="actions-secondaires">
+        <button class="btn-veto" data-action-locale="veto" ${cible.vetosRestants <= 0 ? "disabled" : ""}>
+          🙅 Véto (${cible.vetosRestants})
+        </button>
+      </div>
+    `;
+    zone.querySelector("#btn-valider-manche").addEventListener("click", () => envoyerAction("valider-manche", {}));
+    zone.querySelector("[data-action-locale='veto']").addEventListener("click", () => envoyerAction("veto", {}));
+  }
+
+  function rendreResultat(zone, m, cible) {
+    const res = m.resultat;
+    let html = "";
+    if (res.type === "veto") {
+      html = `<div class="resultat-calme"><h4>Manche passée 🙈</h4><p>${cible.nom} a utilisé une carte Véto.</p></div>`;
+    } else {
+      const texteAffiche = m.estGage ? m.gageTexte : m.carteTexte;
+      const reponse = m.reponseId && m.reponseId !== "libre"
+        ? REPONSES_SITUATION.find((r) => r.id === m.reponseId)
+        : null;
+      const texteReponseLibre = m.reponseId === "libre" ? echapper(m.reponseLibre) : null;
+      const aUneReponse = !!reponse || texteReponseLibre !== null;
+      html = `
+        <div class="resultat-calme">
+          <h4>${m.estGage ? "🎁 Gage réalisé" : aUneReponse ? "💬 Sa réponse" : "✅ C'est fait"}</h4>
+          <p>${cible.nom} : « ${texteAffiche} »</p>
+          ${reponse ? `<p class="reponse-situation-choisie">${cible.nom} répond : <strong>${reponse.texte}</strong></p>` : ""}
+          ${texteReponseLibre !== null ? `<p class="reponse-situation-choisie">${cible.nom} répond : <strong>${texteReponseLibre}</strong></p>` : ""}
+        </div>`;
+    }
+
+    const encoreEnAttente = res.defiId && gameState.defisEnAttente.some((d) => d.id === res.defiId);
+    if (encoreEnAttente) {
+      html += `
+        <div class="resultat-calme">
+          <h4>🎯 Défi à valider</h4>
+          <p>${cible.nom} devait : « ${m.carteTexte} »</p>
+          <div class="actions-secondaires">
+            <button class="btn btn-secondaire" data-defi-valider="1">✅ C'est fait</button>
+            <button class="btn btn-secondaire" data-defi-valider="0">❌ Pas fait</button>
+          </div>
+          <p class="texte-aide">Tu peux aussi le valider plus tard depuis « Défis en attente ».</p>
+        </div>`;
+    }
+
+    const peutContinuer = contexte.role !== "invite";
+    zone.innerHTML = html + (peutContinuer
+      ? `<button class="btn btn-principal" id="btn-manche-suivante">Manche suivante ➡️</button>`
+      : `<div class="zone-attente-cible">En attente de l'hôte pour la suite…</div>`);
+
+    if (encoreEnAttente) {
+      zone.querySelectorAll("[data-defi-valider]").forEach((b) => {
+        b.addEventListener("click", () => {
+          validerDefiUI(res.defiId, b.dataset.defiValider === "1");
+          rendreResultat(zone, m, cible);
+        });
+      });
+    }
+
+    if (peutContinuer) {
+      zone.querySelector("#btn-manche-suivante").addEventListener("click", () => {
+        if (contexte.role === "local") {
+          demarrerMancheEtTransferer();
+        } else {
+          const m2 = Engine.demarrerManche(gameState);
+          if (!m2) {
+            Engine.terminerPartie(gameState);
+            diffuser();
+            afficherEcran("ecran-fin");
+            rendreFinEcran();
+            return;
+          }
+          diffuser();
+          actualiserEcranJeu();
+        }
+      });
+    }
+  }
+
+  // ------------------------------------------------------------
+  // Défis en attente (validation manuelle, à tout moment)
+  // ------------------------------------------------------------
+  function actualiserBarreDefis() {
+    const barre = $("#barre-defis");
+    if (!barre || !gameState) return;
+    const n = gameState.defisEnAttente.length;
+    barre.style.display = n > 0 ? "block" : "none";
+    $("#nb-defis-attente").textContent = n;
+  }
+
+  function remplirModaleDefis() {
+    const zone = $("#liste-defis-attente");
+    if (!gameState || gameState.defisEnAttente.length === 0) {
+      zone.innerHTML = `<p class="texte-aide">Aucun défi en attente pour le moment.</p>`;
+      return;
+    }
+    zone.innerHTML = "";
+    gameState.defisEnAttente.forEach((d) => {
+      const ligne = document.createElement("div");
+      ligne.className = "ligne-defi";
+      ligne.innerHTML = `
+        <p><span class="nom-cible">${d.cibleNom}</span> — « ${d.texte} »</p>
+        <div class="actions-secondaires">
+          <button class="btn btn-secondaire" data-defi="${d.id}" data-reussi="1">✅ Fait</button>
+          <button class="btn btn-secondaire" data-defi="${d.id}" data-reussi="0">❌ Pas fait</button>
+        </div>
+      `;
+      zone.appendChild(ligne);
+    });
+    zone.querySelectorAll("[data-defi]").forEach((b) => {
+      b.addEventListener("click", () => validerDefiUI(b.dataset.defi, b.dataset.reussi === "1"));
+    });
+  }
+
+  function rendreDefisAttenteFin() {
+    const zone = $("#defis-attente-fin");
+    if (!zone || !gameState) return;
+    if (gameState.defisEnAttente.length === 0) { zone.innerHTML = ""; return; }
+    let html = `<div class="bloc"><h3>Défis encore en attente</h3>`;
+    gameState.defisEnAttente.forEach((d) => {
+      html += `
+        <div class="ligne-defi">
+          <p><span class="nom-cible">${d.cibleNom}</span> — « ${d.texte} »</p>
+          <div class="actions-secondaires">
+            <button class="btn btn-secondaire" data-defi-fin="${d.id}" data-reussi="1">✅ Fait</button>
+            <button class="btn btn-secondaire" data-defi-fin="${d.id}" data-reussi="0">❌ Pas fait</button>
+          </div>
+        </div>`;
+    });
+    html += `</div>`;
+    zone.innerHTML = html;
+    zone.querySelectorAll("[data-defi-fin]").forEach((b) => {
+      b.addEventListener("click", () => validerDefiUI(b.dataset.defiFin, b.dataset.reussi === "1"));
+    });
+  }
+
+  // ------------------------------------------------------------
+  // Fin de partie — plus de score, donc plus de podium ni de
+  // récompense/gage de fin : juste un petit récapitulatif.
+  // ------------------------------------------------------------
+  function rendreFinEcran() {
+    const n = (gameState.manche ? gameState.manche.numero : gameState.tour) || gameState.tour;
+    $("#recap-fin").innerHTML = `
+      <div class="resultat-calme">
+        <h4>🎉 Bien joué !</h4>
+        <p>${n} manche${n > 1 ? "s" : ""} jouée${n > 1 ? "s" : ""} ce soir.</p>
+      </div>
+    `;
+    rendreDefisAttenteFin();
+    rendreChat($("#commentaires-fin"));
+  }
+
+  function afficherFin() {
+    Engine.terminerPartie(gameState);
+    afficherEcran("ecran-fin");
+    rendreFinEcran();
+    rafraichirModalesOuvertes();
+  }
+
+  // Échappe le texte libre saisi par les joueurs avant de l'insérer dans le
+  // HTML (chat, commentaires) — évite qu'un message contenant "<" ou "&"
+  // casse l'affichage ou s'exécute comme du HTML.
+  function echapper(texte) {
+    const d = document.createElement("div");
+    d.textContent = String(texte || "");
+    return d.innerHTML;
+  }
+
+  // Chat commun à toute la partie — visible et modifiable par tout le
+  // monde (hôte et invités), accessible depuis le bouton flottant pendant
+  // le jeu et directement sur l'écran de fin. Sert aussi à préciser "avec
+  // qui" en cas de BOOM quand le champ dédié ne suffit pas.
+  function ajouterCommentaireUI(texte) {
+    const t = (texte || "").trim();
+    if (!t) return;
+    if (contexte.role === "invite") {
+      envoyerActionInvite("commentaire", { texte: t });
+      return;
+    }
+    const idActeur = contexte.moiId || (gameState.joueurs[0] && gameState.joueurs[0].id);
+    Engine.ajouterCommentaire(gameState, idActeur, t);
+    if (contexte.role === "hote") diffuser();
+    apresMiseAJourEtat();
+  }
+
+  function rendreChat(zone) {
+    if (!zone || !gameState) return;
+    const liste = gameState.commentaires || [];
+    const idChamp = `champ-chat-${zone.id}`;
+    let html = "";
+    if (liste.length === 0) {
+      html += `<p class="texte-aide">Personne n'a encore rien écrit — dites qui, quoi, confirmez un gage, ou discutez.</p>`;
+    } else {
+      html += `<div class="liste-commentaires">`;
+      liste.forEach((c) => {
+        html += `<p class="ligne-commentaire"><strong>${echapper(c.nom)} :</strong> ${echapper(c.texte)}</p>`;
+      });
+      html += `</div>`;
+    }
+    html += `
+      <div class="ajout-commentaire">
+        <input id="${idChamp}" class="champ" placeholder="Écris un message…" maxlength="200" />
+        <button class="btn btn-secondaire" data-envoyer-chat>Envoyer</button>
+      </div>`;
+    zone.innerHTML = html;
+    const envoyer = () => {
+      const champ = zone.querySelector(`#${idChamp}`);
+      if (!champ) return;
+      ajouterCommentaireUI(champ.value);
+      champ.value = "";
+      champ.focus();
+    };
+    zone.querySelector("[data-envoyer-chat]").addEventListener("click", envoyer);
+    zone.querySelector(`#${idChamp}`).addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter") envoyer();
+    });
+  }
+
+  // Rafraîchit le contenu des modales ouvertes (défis, chat) après tout
+  // changement d'état reçu — pour que ce qui est déjà affiché à l'écran
+  // reste à jour sans que le joueur ait besoin de refermer/rouvrir.
+  function rafraichirModalesOuvertes() {
+    if ($("#modale-defis").classList.contains("ouverte")) remplirModaleDefis();
+    const modaleChat = $("#modale-chat");
+    if (modaleChat && modaleChat.classList.contains("ouverte")) rendreChat($("#chat-corps"));
+  }
+
+  // ------------------------------------------------------------
+  // Reprise automatique de session — se rebranche sur le même salon
+  // après un rechargement de page (mise en veille prolongée, appli
+  // relancée…), sans jamais avoir besoin d'un nouveau code. Le salon
+  // Firebase, lui, ne disparaît jamais tout seul : seule une fermeture
+  // explicite (bouton « Retour » / « Nouvelle partie ») le supprime.
+  // ------------------------------------------------------------
+  function tenterReprendreHote(session) {
+    codeSalon = session.codeSalon;
+    monJoueurId = session.monJoueurId;
+    refSalon = db.ref("salons/" + codeSalon);
+    refSalon
+      .get()
+      .then((snap) => {
+        if (!snap.exists()) { effacerSession(); return; } // salon fermé entre-temps
+        const val = snap.val() || {};
+        contexte.role = "hote";
+        contexte.moiId = monJoueurId;
+
+        if (val.etat) {
+          // La partie était déjà lancée : on reconstruit l'état de jeu à
+          // partir de la dernière version connue de Firebase (le tirage
+          // aléatoire n'a pas besoin d'être identique à avant, une nouvelle
+          // fonction suffit pour la suite de la partie).
+          gameState = normaliserEtat(val.etat);
+          if (typeof gameState.rng !== "function") gameState.rng = Math.random;
+          contexte.joueursLocaux = gameState.joueurs.map((j) => ({
+            id: j.id, nom: j.nom, distant: j.id !== monJoueurId,
+          }));
+          attacherEcouteursHote();
+          if (gameState.terminee) afficherFin();
+          else { afficherEcran("ecran-jeu"); actualiserEcranJeu(); }
+        } else {
+          // Toujours dans la salle d'attente : on restaure l'écran de
+          // configuration avec la liste de joueurs déjà inscrits.
+          demarrerConfiguration("hote");
+          const inscriptions = val.inscriptions || {};
+          contexte.joueursLocaux = [{ id: monJoueurId, nom: "Moi" }];
+          Object.keys(inscriptions).forEach((id) => {
+            if (id === monJoueurId) return;
+            const info = inscriptions[id] || {};
+            contexte.joueursLocaux.push({
+              id, nom: String(info.nom || "Invité").slice(0, 20),
+              distant: true,
+            });
+          });
+          redessinerListeJoueurs();
+          $("#bloc-code-salon").style.display = "block";
+          $("#affichage-code").textContent = codeSalon;
+          $("#statut-salon").textContent = "✅ Salon repris — le code est toujours valable.";
+          $("#ajout-joueur-local").style.display = "none";
+          attacherEcouteursHote();
+          afficherEcran("ecran-config");
+        }
+      })
+      .catch((e) => console.error("Erreur Firebase (reprise du salon hôte)", e));
+  }
+
+  function tenterReprendreInvite(session) {
+    monJoueurId = session.monJoueurId;
+    codeSalonRejoint = session.codeSalonRejoint;
+    nomInvite = session.nomInvite;
+    const cible = db.ref("salons/" + codeSalonRejoint);
+    cible
+      .get()
+      .then((snap) => {
+        if (!snap.exists()) { effacerSession(); return; } // salon fermé entre-temps
+        refSalon = cible;
+        contexte.role = "invite";
+        contexte.moiId = monJoueurId;
+        afficherEcran("ecran-attente");
+        $("#statut-connexion").textContent = "Reconnecté ! Synchronisation en cours…";
+        ecouterSalonInvite();
+        forcerRafraichissementInvite();
+      })
+      .catch((e) => console.error("Erreur Firebase (reprise du salon invité)", e));
+  }
+
+  function tenterRepriseSession() {
+    if (!db) return;
+    const session = chargerSession();
+    if (!session || !session.role) return;
+    if (session.role === "hote" && session.codeSalon && session.monJoueurId) {
+      tenterReprendreHote(session);
+    } else if (session.role === "invite" && session.codeSalonRejoint && session.monJoueurId) {
+      tenterReprendreInvite(session);
+    } else {
+      effacerSession();
+    }
+  }
+
+  tenterRepriseSession();
+})();
