@@ -18,7 +18,7 @@
   // Numéro de build affiché en bas de l'écran d'accueil — sert à vérifier
   // qu'un téléphone a bien reçu la dernière version déployée (et pas une
   // copie mise en cache par le navigateur).
-  const VERSION_APP = "2026-10-11-8";
+  const VERSION_APP = "2026-10-11-9";
 
   // Un joueur sur téléphone n'a pas accès à la console développeur : sans
   // ça, une erreur JavaScript est invisible et donne l'impression que "rien
@@ -117,34 +117,84 @@
 
   // ------------------------------------------------------------
   // Session en ligne persistante — le salon Firebase lui-même n'expire
-  // jamais tout seul (aucune limite de temps côté serveur). Le seul risque
-  // de "code périmé" vient de l'onglet qui recharge la page (mise en
-  // veille prolongée, appli relancée…), ce qui efface la mémoire de
-  // l'appli. On garde donc le code + l'identité du joueur dans le
-  // stockage de CET onglet (sessionStorage, pas localStorage), pour se
-  // rebrancher automatiquement sur le même salon au rechargement — et
-  // pour que deux onglets ouverts en même temps sur deux salons différents
-  // ne se marchent pas dessus : chaque onglet a son propre stockage, donc
-  // on peut héberger/rejoindre plusieurs parties en parallèle sans qu'un
-  // onglet n'efface le code de l'autre.
+  // jamais tout seul. Le risque de "code périmé" vient du navigateur qui
+  // recharge la page (mise en veille prolongée, mémoire reprise par le
+  // téléphone en arrière-plan…) : sessionStorage ne survit pas forcément à
+  // ça sur mobile (Safari iOS en particulier purge et recharge un onglet
+  // mis de côté trop longtemps, ce qui repart de zéro), donc on utilise
+  // localStorage, qui lui survit toujours à un rechargement.
+  //
+  // Pour que plusieurs onglets puissent chacun héberger/rejoindre un
+  // salon différent sans se marcher dessus, on ne stocke pas UNE session
+  // mais un dictionnaire { code: session }, et chaque onglet retrouve la
+  // sienne via le code inscrit dans sa propre URL (?salon=CODE) plutôt que
+  // via "la dernière session enregistrée" — qui pourrait appartenir à un
+  // autre onglet.
   // ------------------------------------------------------------
-  const CLE_SESSION = "boom_session_v1";
+  const CLE_SESSIONS = "boom_sessions_v2";
+  const DUREE_MAX_SESSION = 24 * 60 * 60 * 1000; // 24h : au-delà, on oublie
 
-  function sauvegarderSession(donnees) {
+  function chargerToutesLesSessions() {
     try {
-      sessionStorage.setItem(CLE_SESSION, JSON.stringify({ ...donnees, ts: Date.now() }));
+      const brut = localStorage.getItem(CLE_SESSIONS);
+      return brut ? JSON.parse(brut) : {};
+    } catch (e) {
+      return {};
+    }
+  }
+  function ecrireToutesLesSessions(sessions) {
+    try { localStorage.setItem(CLE_SESSIONS, JSON.stringify(sessions)); } catch (e) {}
+  }
+
+  function sauvegarderSession(code, donnees) {
+    if (!code) return;
+    const sessions = chargerToutesLesSessions();
+    const maintenant = Date.now();
+    // On en profite pour oublier les sessions trop vieilles plutôt que de
+    // laisser le dictionnaire grossir indéfiniment au fil des parties.
+    Object.keys(sessions).forEach((c) => {
+      if (!sessions[c] || maintenant - (sessions[c].ts || 0) > DUREE_MAX_SESSION) delete sessions[c];
+    });
+    sessions[code] = { ...donnees, ts: maintenant };
+    ecrireToutesLesSessions(sessions);
+    fixerCodeDansUrl(code);
+  }
+  function chargerSession(code) {
+    if (!code) return null;
+    const sessions = chargerToutesLesSessions();
+    return sessions[code] || null;
+  }
+  function effacerSession(code) {
+    if (code) {
+      const sessions = chargerToutesLesSessions();
+      if (sessions[code]) { delete sessions[code]; ecrireToutesLesSessions(sessions); }
+    }
+    effacerCodeDeUrl();
+  }
+
+  // Lie cet onglet à un salon précis via l'URL (?salon=CODE), sans
+  // recharger la page — c'est ce qui permet de distinguer "mon" salon de
+  // celui d'un autre onglet au moment de se reconnecter après rechargement.
+  function fixerCodeDansUrl(code) {
+    try {
+      const url = new URL(window.location.href);
+      url.searchParams.set("salon", code);
+      window.history.replaceState(null, "", url);
     } catch (e) {}
   }
-  function chargerSession() {
+  function effacerCodeDeUrl() {
     try {
-      const brut = sessionStorage.getItem(CLE_SESSION);
-      return brut ? JSON.parse(brut) : null;
+      const url = new URL(window.location.href);
+      url.searchParams.delete("salon");
+      window.history.replaceState(null, "", url);
+    } catch (e) {}
+  }
+  function lireCodeDepuisUrl() {
+    try {
+      return new URL(window.location.href).searchParams.get("salon");
     } catch (e) {
       return null;
     }
-  }
-  function effacerSession() {
-    try { sessionStorage.removeItem(CLE_SESSION); } catch (e) {}
   }
 
   // ------------------------------------------------------------
@@ -235,6 +285,7 @@
   }
 
   function reinitialiser() {
+    const codeActuel = codeSalon || codeSalonRejoint;
     contexte.role = null;
     contexte.moiId = null;
     contexte.joueursLocaux = [];
@@ -249,7 +300,7 @@
     codeSalonRejoint = null;
     nomInvite = null;
     monJoueurId = null;
-    effacerSession();
+    effacerSession(codeActuel);
   }
 
   // ------------------------------------------------------------
@@ -391,7 +442,7 @@
       .then(() => {
         $("#statut-salon").textContent = "✅ Salon prêt — donne ce code aux autres joueurs. Il reste valable toute la journée, quel que soit le temps que ça prend pour rejoindre.";
         $("#erreur-config").textContent = "";
-        sauvegarderSession({ role: "hote", codeSalon, monJoueurId });
+        sauvegarderSession(codeSalon, { role: "hote", monJoueurId });
       })
       .catch((e) => {
         console.error("Erreur Firebase (création du salon)", e);
@@ -515,7 +566,7 @@
       })
       .then(() => {
         if (!refSalon) return; // le salon n'existait pas, déjà signalé plus haut
-        sauvegarderSession({ role: "invite", codeSalonRejoint: code, monJoueurId, nomInvite });
+        sauvegarderSession(code, { role: "invite", monJoueurId, nomInvite });
         afficherEcran("ecran-attente");
         $("#statut-connexion").textContent = "Connecté ! En attente du lancement par l'hôte…";
         ecouterSalonInvite();
@@ -1145,14 +1196,14 @@
   // Firebase, lui, ne disparaît jamais tout seul : seule une fermeture
   // explicite (bouton « Retour » / « Nouvelle partie ») le supprime.
   // ------------------------------------------------------------
-  function tenterReprendreHote(session) {
-    codeSalon = session.codeSalon;
+  function tenterReprendreHote(code, session) {
+    codeSalon = code;
     monJoueurId = session.monJoueurId;
     refSalon = db.ref("salons/" + codeSalon);
     refSalon
       .get()
       .then((snap) => {
-        if (!snap.exists()) { effacerSession(); return; } // salon fermé entre-temps
+        if (!snap.exists()) { effacerSession(code); return; } // salon fermé entre-temps
         const val = snap.val() || {};
         contexte.role = "hote";
         contexte.moiId = monJoueurId;
@@ -1196,15 +1247,15 @@
       .catch((e) => console.error("Erreur Firebase (reprise du salon hôte)", e));
   }
 
-  function tenterReprendreInvite(session) {
+  function tenterReprendreInvite(code, session) {
     monJoueurId = session.monJoueurId;
-    codeSalonRejoint = session.codeSalonRejoint;
+    codeSalonRejoint = code;
     nomInvite = session.nomInvite;
     const cible = db.ref("salons/" + codeSalonRejoint);
     cible
       .get()
       .then((snap) => {
-        if (!snap.exists()) { effacerSession(); return; } // salon fermé entre-temps
+        if (!snap.exists()) { effacerSession(code); return; } // salon fermé entre-temps
         refSalon = cible;
         contexte.role = "invite";
         contexte.moiId = monJoueurId;
@@ -1218,14 +1269,16 @@
 
   function tenterRepriseSession() {
     if (!db) return;
-    const session = chargerSession();
-    if (!session || !session.role) return;
-    if (session.role === "hote" && session.codeSalon && session.monJoueurId) {
-      tenterReprendreHote(session);
-    } else if (session.role === "invite" && session.codeSalonRejoint && session.monJoueurId) {
-      tenterReprendreInvite(session);
+    const code = lireCodeDepuisUrl();
+    if (!code) return;
+    const session = chargerSession(code);
+    if (!session || !session.role || !session.monJoueurId) return;
+    if (session.role === "hote") {
+      tenterReprendreHote(code, session);
+    } else if (session.role === "invite") {
+      tenterReprendreInvite(code, session);
     } else {
-      effacerSession();
+      effacerSession(code);
     }
   }
 
