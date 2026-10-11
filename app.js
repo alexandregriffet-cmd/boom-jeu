@@ -18,7 +18,7 @@
   // Numéro de build affiché en bas de l'écran d'accueil — sert à vérifier
   // qu'un téléphone a bien reçu la dernière version déployée (et pas une
   // copie mise en cache par le navigateur).
-  const VERSION_APP = "2026-10-11-4";
+  const VERSION_APP = "2026-10-11-5";
 
   // Un joueur sur téléphone n'a pas accès à la console développeur : sans
   // ça, une erreur JavaScript est invisible et donne l'impression que "rien
@@ -633,7 +633,7 @@
         Engine.validerDefi(gameState, payload.defiId, !!payload.reussi);
         break;
       case "valider-manche":
-        Engine.validerManche(gameState, payload.reponseId, payload.avecQuiReponse);
+        Engine.validerManche(gameState, payload.reponseId, payload.avecQuiReponse, payload.reponseLibre);
         break;
       case "manche-suivante":
         Engine.demarrerManche(gameState);
@@ -856,6 +856,7 @@
       zone.innerHTML = `
         <p class="texte-aide">${cible.nom}, ta réponse, sans filtre :</p>
         <div class="grille-reponses-situation" id="grille-reponses-situation"></div>
+        <div id="bloc-reponse-libre"></div>
         <div class="actions-secondaires">
           <button class="btn-veto" data-action-locale="veto" ${cible.vetosRestants <= 0 ? "disabled" : ""}>
             🙅 Véto (${cible.vetosRestants})
@@ -870,6 +871,34 @@
         b.addEventListener("click", () => envoyerAction("valider-manche", { reponseId: r.id }));
         grille.appendChild(b);
       });
+
+      // Réponse libre : un 6e choix qui ouvre un petit champ texte au lieu
+      // d'envoyer tout de suite, pour que la Cible puisse écrire sa propre
+      // réponse plutôt que de choisir l'une des 5 proposées.
+      const blocLibre = zone.querySelector("#bloc-reponse-libre");
+      const btnLibre = document.createElement("button");
+      btnLibre.className = "btn-reponse-situation btn-reponse-libre";
+      btnLibre.textContent = "✍️ Autre (réponse libre)";
+      btnLibre.addEventListener("click", () => {
+        blocLibre.innerHTML = `
+          <div class="reponse-libre-champ">
+            <input id="champ-reponse-libre" class="champ" placeholder="Ta réponse, en quelques mots…" maxlength="140" />
+            <button class="btn btn-secondaire" id="btn-valider-reponse-libre">✓ Valider</button>
+          </div>
+          <p id="erreur-reponse-libre" class="texte-erreur"></p>
+        `;
+        blocLibre.querySelector("#champ-reponse-libre").focus();
+        blocLibre.querySelector("#btn-valider-reponse-libre").addEventListener("click", () => {
+          const texte = blocLibre.querySelector("#champ-reponse-libre").value.trim();
+          if (!texte) {
+            blocLibre.querySelector("#erreur-reponse-libre").textContent = "Écris quelque chose avant de valider.";
+            return;
+          }
+          envoyerAction("valider-manche", { reponseId: "libre", reponseLibre: texte });
+        });
+      });
+      grille.appendChild(btnLibre);
+
       zone.querySelector("[data-action-locale='veto']").addEventListener("click", () => envoyerAction("veto", {}));
       return;
     }
@@ -894,12 +923,17 @@
       html = `<div class="resultat-calme"><h4>Manche passée 🙈</h4><p>${cible.nom} a utilisé une carte Véto.</p></div>`;
     } else {
       const texteAffiche = m.estGage ? m.gageTexte : m.carteTexte;
-      const reponse = m.reponseId ? REPONSES_SITUATION.find((r) => r.id === m.reponseId) : null;
+      const reponse = m.reponseId && m.reponseId !== "libre"
+        ? REPONSES_SITUATION.find((r) => r.id === m.reponseId)
+        : null;
+      const texteReponseLibre = m.reponseId === "libre" ? echapper(m.reponseLibre) : null;
+      const aUneReponse = !!reponse || texteReponseLibre !== null;
       html = `
         <div class="resultat-calme">
-          <h4>${m.estGage ? "🎁 Gage réalisé" : reponse ? "💬 Sa réponse" : "✅ C'est fait"}</h4>
+          <h4>${m.estGage ? "🎁 Gage réalisé" : aUneReponse ? "💬 Sa réponse" : "✅ C'est fait"}</h4>
           <p>${cible.nom} : « ${texteAffiche} »</p>
           ${reponse ? `<p class="reponse-situation-choisie">${cible.nom} répond : <strong>${reponse.texte}</strong></p>` : ""}
+          ${texteReponseLibre !== null ? `<p class="reponse-situation-choisie">${cible.nom} répond : <strong>${texteReponseLibre}</strong></p>` : ""}
           ${m.avecQui ? `<div id="bloc-avec-qui"></div>` : ""}
         </div>`;
     }

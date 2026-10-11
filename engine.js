@@ -179,24 +179,34 @@
   // Sur une carte situation classique (ni Défi, ni gage), la Cible doit
   // choisir une des 5 réponses honnêtes (reponseId) plutôt que de juste
   // taper "c'est fait" : personne ne devine, elle dit juste la vérité.
+  // Elle peut aussi écrire sa propre réponse libre (reponseId = "libre",
+  // avec reponseLibre rempli) plutôt que de choisir l'une des 5.
   // Les cartes Défi et les gages restent validées tout court.
-  function validerManche(state, reponseId, avecQuiReponse) {
+  function validerManche(state, reponseId, avecQuiReponse, reponseLibre) {
     const m = state.manche;
     if (!m || m.phase !== "en_cours") throw new Error("Pas le moment de valider cette manche.");
 
     const demandeReponse = !m.defi && !m.estGage;
     let reponse = null;
+    let texteLibre = null;
     if (demandeReponse) {
-      reponse = REPONSES_SITUATION.find((r) => r.id === reponseId);
-      if (!reponse) throw new Error("Choisis une réponse avant de valider.");
+      if (reponseId === "libre") {
+        texteLibre = (reponseLibre || "").trim().slice(0, 140);
+        if (!texteLibre) throw new Error("Écris ta réponse avant de valider.");
+      } else {
+        reponse = REPONSES_SITUATION.find((r) => r.id === reponseId);
+        if (!reponse) throw new Error("Choisis une réponse avant de valider.");
+      }
     }
 
-    m.reponseId = reponse ? reponse.id : null;
+    m.reponseId = reponse ? reponse.id : texteLibre !== null ? "libre" : null;
+    m.reponseLibre = texteLibre;
     m.avecQuiReponse = m.avecQui ? (avecQuiReponse || "").trim() : null;
     m.phase = "terminee";
     m.resultat = {
       type: "fait",
       reponseId: m.reponseId,
+      reponseLibre: m.reponseLibre,
       avecQuiReponse: m.avecQuiReponse,
       defiEnAttente: false,
       defiId: null,

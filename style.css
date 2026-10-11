@@ -274,7 +274,10 @@ h3 { font-size: 1rem; margin: 0 0 10px; color: var(--texte-att); text-transform:
   text-align: center;
 }
 .btn-reponse-situation:active { transform: scale(.97); }
+.btn-reponse-libre { background: transparent; border-style: dashed; opacity: .85; }
 .reponse-situation-choisie { color: var(--accent-2); }
+.reponse-libre-champ { display: flex; gap: 8px; margin: 4px 0 2px; }
+.reponse-libre-champ .champ { flex: 1; }
 
 .actions-secondaires { display: flex; gap: 10px; }
 .btn-veto, .btn-joker {
